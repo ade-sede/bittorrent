@@ -20,13 +20,25 @@ defmodule Bencode do
   def decode(encoded_value) when is_binary(encoded_value) do
     binary_data = :binary.bin_to_list(encoded_value)
 
-    case Enum.find_index(binary_data, fn char -> char == 58 end) do
-      nil ->
-        IO.puts("The ':' character is not found in the binary")
+    case binary_data do
+      [?i | rest] ->
+        case List.last(rest, nil) do
+          nil ->
+            IO.puts("String starts with 'i' but does not have the 'e' suffix")
 
-      index ->
-        rest = Enum.slice(binary_data, (index + 1)..-1)
-        List.to_string(rest)
+          ?e ->
+            String.to_integer(List.to_string(Enum.drop(rest, -1)))
+        end
+
+      _ ->
+        case Enum.find_index(binary_data, fn char -> char == ?: end) do
+          nil ->
+            IO.puts("The ':' character is not found in the binary")
+
+          index ->
+            rest = Enum.slice(binary_data, (index + 1)..-1)
+            List.to_string(rest)
+        end
     end
   end
 
