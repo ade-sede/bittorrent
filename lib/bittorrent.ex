@@ -22,12 +22,13 @@ defmodule Bencode do
 
     case binary_data do
       [?i | rest] ->
-        case List.last(rest, nil) do
+        case Enum.find_index(rest, fn char -> char == ?e end) do
           nil ->
             IO.puts("String starts with 'i' but does not have the 'e' suffix")
 
-          ?e ->
-            String.to_integer(List.to_string(Enum.drop(rest, -1)))
+          index ->
+            numberStr = List.to_string(Enum.slice(rest, 0..(index - 1)))
+            String.to_integer(numberStr)
         end
 
       _ ->
