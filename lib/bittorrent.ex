@@ -3,6 +3,12 @@ defmodule Bittorrent.CLI do
     case argv do
       ["decode" | [encoded_str | _]] ->
         case Bencode.decode(encoded_str) do
+          :empty ->
+            IO.puts("Nothing to decode")
+
+          {:error, reason} ->
+            IO.puts(reason)
+
           {decoded_str, _remaining} ->
             IO.puts(Jason.encode!(decoded_str))
 
@@ -25,7 +31,7 @@ defmodule Bencode do
   defp decode_number(binary_data) do
     case Enum.find_index(binary_data, fn char -> char == ?e end) do
       nil ->
-        IO.puts("String starts with 'i' but does not have the 'e' suffix")
+        {:error, "`e` suffix not found"}
 
       index ->
         numberStr = List.to_string(Enum.slice(binary_data, 0..(index - 1)))
@@ -37,7 +43,7 @@ defmodule Bencode do
   defp decode_string(binary_data) do
     case Enum.find_index(binary_data, fn char -> char == ?: end) do
       nil ->
-        IO.puts("The ':' character is not found in the binary")
+        {:error, "`:` delimiter not found"}
 
       index ->
         prefix = Enum.slice(binary_data, 0..(index - 1))
@@ -57,8 +63,13 @@ defmodule Bencode do
         {Enum.reverse(acc), remaining}
 
       _ ->
-        {decoded, remaining} = decode(binary_data)
-        decode_list(remaining, [decoded | acc])
+        case decode(binary_data) do
+          {:error, reason} ->
+            {:error, reason}
+
+          {decoded, remaining} ->
+            decode_list(remaining, [decoded | acc])
+        end
     end
   end
 
@@ -72,12 +83,12 @@ defmodule Bencode do
 
       _ ->
         case decode_string(binary_data) do
+          {:error, reason} ->
+            {:error, "Key could not be decoded: #{reason}"}
+
           {key, remaining} ->
             {value, remaining} = decode(remaining)
             decode_dict(remaining, Map.put(acc, key, value))
-
-          ret ->
-            ret
         end
     end
   end
