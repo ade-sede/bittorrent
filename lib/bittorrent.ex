@@ -62,6 +62,26 @@ defmodule Bencode do
     end
   end
 
+  defp decode_dict(binary_data, acc \\ %{}) do
+    case binary_data do
+      [] ->
+        {acc, []}
+
+      [?e | remaining] ->
+        {acc, remaining}
+
+      _ ->
+        case decode_string(binary_data) do
+          {key, remaining} ->
+            {value, remaining} = decode(remaining)
+            decode_dict(remaining, Map.put(acc, key, value))
+
+          ret ->
+            ret
+        end
+    end
+  end
+
   def decode(encoded_value) when is_list(encoded_value) do
     decode(List.to_string(encoded_value))
   end
@@ -78,6 +98,9 @@ defmodule Bencode do
 
       [?i | tail] ->
         decode_number(tail)
+
+      [?d | tail] ->
+        decode_dict(tail)
 
       _ ->
         decode_string(binary_data)
