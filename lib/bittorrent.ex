@@ -11,9 +11,22 @@ defmodule Bittorrent.CLI do
 
           {decoded_str, _remaining} ->
             IO.puts(Jason.encode!(decoded_str))
+        end
 
-          ret ->
-            ret
+      ["info" | [filename | _]] ->
+        file = File.read!(filename)
+        as_binary = IO.iodata_to_binary(file)
+
+        case Bencode.decode(as_binary) do
+          :empty ->
+            IO.puts("Nothing to decode")
+
+          {:error, reason} ->
+            IO.puts(reason)
+
+          {decoded_str, _remaining} ->
+            IO.puts("Tracker URL: #{decoded_str["announce"]}")
+            IO.puts("Length: #{decoded_str["info"]["length"]}")
         end
 
       [command | _] ->
@@ -93,14 +106,8 @@ defmodule Bencode do
     end
   end
 
-  def decode(encoded_value) when is_list(encoded_value) do
-    decode(List.to_string(encoded_value))
-  end
-
-  def decode(encoded_value) when is_binary(encoded_value) do
-    binary_data = :binary.bin_to_list(encoded_value)
-
-    case binary_data do
+  def decode(data) when is_list(data) do
+    case data do
       [] ->
         :empty
 
@@ -114,8 +121,12 @@ defmodule Bencode do
         decode_dict(tail)
 
       _ ->
-        decode_string(binary_data)
+        decode_string(data)
     end
+  end
+
+  def decode(encoded_value) when is_binary(encoded_value) do
+    decode(:binary.bin_to_list(encoded_value))
   end
 
   def decode(_), do: "Invalid encoded value: not binary"
