@@ -13,11 +13,16 @@ defmodule Bittorrent.CLI do
             IO.puts(Jason.encode!(decoded_str))
         end
 
+      # For testing purposes
+      ["encode" | _] ->
+        val = %{"foo" => "bar", "abc" => "def", "num" => 12, "list" => [13, 2, 3, 4, 5]}
+        IO.puts(Bencode.encode(val))
+
       ["info" | [filename | _]] ->
         file = File.read!(filename)
-        as_binary = IO.iodata_to_binary(file)
+        content = IO.iodata_to_binary(file)
 
-        case Bencode.decode(as_binary) do
+        case Bencode.decode(content) do
           :empty ->
             IO.puts("Nothing to decode")
 
@@ -27,6 +32,7 @@ defmodule Bittorrent.CLI do
           {decoded_str, _remaining} ->
             IO.puts("Tracker URL: #{decoded_str["announce"]}")
             IO.puts("Length: #{decoded_str["info"]["length"]}")
+            # Bencode.encode(decoded_str)
         end
 
       [command | _] ->
@@ -130,4 +136,32 @@ defmodule Bencode do
   end
 
   def decode(_), do: "Invalid encoded value: not binary"
+
+  def encode(string) when is_binary(string), do: "#{String.length(string)}:#{string}"
+
+  def encode(number) when is_number(number), do: "i#{number}e"
+
+  def encode(list) when is_list(list) do
+    {_, encodedList} =
+      Enum.map_reduce(list, "", fn item, byteArray ->
+        encodedItem = encode(item)
+        {encodedItem, "#{byteArray}#{encodedItem}"}
+      end)
+
+    "l#{encodedList}e"
+  end
+
+  def encode(map) when is_map(map) do
+    {_, encodedMap} =
+      Enum.map_reduce(Map.keys(map), "", fn key, byteArray ->
+        encodedKey = encode(key)
+        encodedVal = encode(map[key])
+
+        {{encodedKey, encodedVal}, "#{byteArray}#{encodedKey}#{encodedVal}"}
+      end)
+
+    "d#{encodedMap}e"
+  end
+
+  def encode(_), do: "Unsupported data type"
 end
