@@ -44,14 +44,22 @@ defmodule Bittorrent.CLI do
           {:error, reason} ->
             IO.puts(reason)
 
-          {decoded_content, _} ->
+          {metainfo, _} ->
             hash =
-              :crypto.hash(:sha, Bencode.encode(decoded_content["info"]))
+              :crypto.hash(:sha, Bencode.encode(metainfo["info"]))
               |> Base.encode16(case: :lower)
 
-            IO.puts("Tracker URL: #{decoded_content["announce"]}")
-            IO.puts("Length: #{decoded_content["info"]["length"]}")
+            IO.puts("Tracker URL: #{metainfo["announce"]}")
+            IO.puts("Length: #{metainfo["info"]["length"]}")
             IO.puts("Info Hash: #{hash}")
+            IO.puts("Piece Length: #{metainfo["info"]["piece length"]}")
+            IO.puts("Piece Hashes:")
+
+            for <<piece_hash::size(20)-binary <- metainfo["info"]["pieces"]>>,
+              do:
+                piece_hash
+                |> Base.encode16(case: :lower)
+                |> IO.puts()
         end
 
       _ ->
