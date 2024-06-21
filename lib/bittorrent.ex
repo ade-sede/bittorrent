@@ -1,4 +1,6 @@
 defmodule Bittorrent.CLI do
+  @id :crypto.strong_rand_bytes(20)
+
   def main(["decode" | tail]) do
     case tail do
       [str] ->
@@ -64,6 +66,50 @@ defmodule Bittorrent.CLI do
 
       _ ->
         IO.puts("Usage: your_bittorrent.sh info <path to torrent file>")
+    end
+  end
+
+  def main(["peers" | tail]) do
+    case tail do
+      [filename] ->
+        content =
+          File.read!(filename)
+          |> IO.iodata_to_binary()
+
+        case Bencode.decode(content) do
+          {:error, reason} ->
+            IO.puts(reason)
+
+          {metainfo, _} ->
+            info_hash = Bencode.encode(metainfo["info"])
+
+            response =
+              Req.get!(metainfo["announce"],
+                params: %{
+                  "info_hash" => :crypto.hash(:sha, info_hash),
+                  "peer_id" => @id,
+                  "port" => 6881,
+                  "uploaded" => 0,
+                  "downloaded" => 0,
+                  "left" => metainfo["info"]["length"],
+                  "compact" => 1
+                }
+              )
+
+            case Bencode.decode(response.body) do
+              {:error, reason} ->
+                IO.puts(reason)
+
+              {decoded, _} ->
+                for <<ip_port::binary-size(6) <- decoded["peers"]>> do
+                  <<ip1::8, ip2::8, ip3::8, ip4::8, port::16>> = ip_port
+                  IO.puts("#{ip1}.#{ip2}.#{ip3}.#{ip4}:#{port}")
+                end
+            end
+        end
+
+      _ ->
+        IO.puts("Usage: your_bittorrent.sh peers <path to torrent file>")
     end
   end
 
