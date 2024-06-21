@@ -55,11 +55,11 @@ defmodule Bittorrent.CLI do
             IO.puts("Piece Length: #{metainfo["info"]["piece length"]}")
             IO.puts("Piece Hashes:")
 
-            for <<piece_hash::size(20)-binary <- metainfo["info"]["pieces"]>>,
-              do:
-                piece_hash
-                |> Base.encode16(case: :lower)
-                |> IO.puts()
+            for <<piece_hash::size(20)-binary <- metainfo["info"]["pieces"]>> do
+              piece_hash
+              |> Base.encode16(case: :lower)
+              |> IO.puts()
+            end
         end
 
       _ ->
