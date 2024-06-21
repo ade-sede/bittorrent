@@ -38,30 +38,15 @@ defmodule Bittorrent.CLI do
   def main(["info" | tail]) do
     case tail do
       [filename] ->
-        content =
-          File.read!(filename)
-          |> IO.iodata_to_binary()
+        map = info(filename)
+        IO.puts("Tracker URL: #{map["tracker_url"]}")
+        IO.puts("Length: #{map["length"]}")
+        IO.puts("Info Hash: #{map["info_hash"]}")
+        IO.puts("Piece Length: #{map["piece_length"]}")
+        IO.puts("Piece Hashes:")
 
-        case Bencode.decode(content) do
-          {:error, reason} ->
-            IO.puts(reason)
-
-          {metainfo, _} ->
-            hash =
-              :crypto.hash(:sha, Bencode.encode(metainfo["info"]))
-              |> Base.encode16(case: :lower)
-
-            IO.puts("Tracker URL: #{metainfo["announce"]}")
-            IO.puts("Length: #{metainfo["info"]["length"]}")
-            IO.puts("Info Hash: #{hash}")
-            IO.puts("Piece Length: #{metainfo["info"]["piece length"]}")
-            IO.puts("Piece Hashes:")
-
-            for <<piece_hash::size(20)-binary <- metainfo["info"]["pieces"]>> do
-              piece_hash
-              |> Base.encode16(case: :lower)
-              |> IO.puts()
-            end
+        for piece_hash <- map["piece_hashes"] do
+          IO.puts(piece_hash)
         end
 
       _ ->
@@ -72,41 +57,7 @@ defmodule Bittorrent.CLI do
   def main(["peers" | tail]) do
     case tail do
       [filename] ->
-        content =
-          File.read!(filename)
-          |> IO.iodata_to_binary()
-
-        case Bencode.decode(content) do
-          {:error, reason} ->
-            IO.puts(reason)
-
-          {metainfo, _} ->
-            info_hash = Bencode.encode(metainfo["info"])
-
-            response =
-              Req.get!(metainfo["announce"],
-                params: %{
-                  "info_hash" => :crypto.hash(:sha, info_hash),
-                  "peer_id" => @id,
-                  "port" => 6881,
-                  "uploaded" => 0,
-                  "downloaded" => 0,
-                  "left" => metainfo["info"]["length"],
-                  "compact" => 1
-                }
-              )
-
-            case Bencode.decode(response.body) do
-              {:error, reason} ->
-                IO.puts(reason)
-
-              {decoded, _} ->
-                for <<ip_port::binary-size(6) <- decoded["peers"]>> do
-                  <<ip1::8, ip2::8, ip3::8, ip4::8, port::16>> = ip_port
-                  IO.puts("#{ip1}.#{ip2}.#{ip3}.#{ip4}:#{port}")
-                end
-            end
-        end
+        peers(filename)
 
       _ ->
         IO.puts("Usage: your_bittorrent.sh peers <path to torrent file>")
@@ -121,6 +72,69 @@ defmodule Bittorrent.CLI do
   def main([]) do
     IO.puts("Usage: your_bittorrent.sh <command> <args>")
     System.halt(1)
+  end
+
+  defp info(filename) do
+    File.read!(filename)
+    |> IO.iodata_to_binary()
+    |> Bencode.decode()
+    |> case do
+      {:error, reason} ->
+        IO.puts(reason)
+
+      {metainfo, _} ->
+        %{
+          "tracker_url" => metainfo["announce"],
+          "length" => metainfo["info"]["length"],
+          "info_hash" =>
+            :crypto.hash(:sha, Bencode.encode(metainfo["info"]))
+            |> Base.encode16(case: :lower),
+          "piece_length" => metainfo["info"]["piece length"],
+          "piece_hashes" =>
+            for <<piece_hash::size(20)-binary <- metainfo["info"]["pieces"]>> do
+              piece_hash
+              |> Base.encode16(case: :lower)
+            end
+        }
+    end
+  end
+
+  defp peers(filename) do
+    File.read!(filename)
+    |> IO.iodata_to_binary()
+    |> Bencode.decode()
+    |> case do
+      {:error, reason} ->
+        IO.puts(reason)
+
+      {metainfo, _} ->
+        Req.get!(metainfo["announce"],
+          params: %{
+            "info_hash" => :crypto.hash(:sha, Bencode.encode(metainfo["info"])),
+            "peer_id" => @id,
+            "port" => 6881,
+            "uploaded" => 0,
+            "downloaded" => 0,
+            "left" => metainfo["info"]["length"],
+            "compact" => 1
+          }
+        ).body
+        |> Bencode.decode()
+        |> case do
+          {:error, reason} ->
+            IO.puts(reason)
+
+          {decoded, _} ->
+            addresses =
+              for <<ip_port::binary-size(6) <- decoded["peers"]>> do
+                <<ip1::8, ip2::8, ip3::8, ip4::8, port::16>> = ip_port
+                "#{ip1}.#{ip2}.#{ip3}.#{ip4}:#{port}"
+              end
+              |> Enum.each(fn address -> IO.puts(address) end)
+
+            addresses
+        end
+    end
   end
 end
 
