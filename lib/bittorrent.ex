@@ -41,7 +41,7 @@ defmodule Bittorrent.CLI do
         map = info(filename)
         IO.puts("Tracker URL: #{map["tracker_url"]}")
         IO.puts("Length: #{map["length"]}")
-        IO.puts("Info Hash: #{map["info_hash"]}")
+        IO.puts("Info Hash: #{map["b16_info_hash"]}")
         IO.puts("Piece Length: #{map["piece_length"]}")
         IO.puts("Piece Hashes:")
 
@@ -61,6 +61,22 @@ defmodule Bittorrent.CLI do
 
       _ ->
         IO.puts("Usage: your_bittorrent.sh peers <path to torrent file>")
+    end
+  end
+
+  def main(["handshake" | tail]) do
+    case tail do
+      [filename, address | _] ->
+        case handshake(filename, address) do
+          {:error, reason} ->
+            IO.puts(reason)
+
+          peer_id ->
+            IO.puts("Peer ID: #{peer_id}")
+        end
+
+      _ ->
+        IO.puts("Usage: your_bittorrent.sh handshake <path to torrent file> <ip>:<port>")
     end
   end
 
@@ -86,9 +102,10 @@ defmodule Bittorrent.CLI do
         %{
           "tracker_url" => metainfo["announce"],
           "length" => metainfo["info"]["length"],
-          "info_hash" =>
+          "b16_info_hash" =>
             :crypto.hash(:sha, Bencode.encode(metainfo["info"]))
             |> Base.encode16(case: :lower),
+          "info_hash" => :crypto.hash(:sha, Bencode.encode(metainfo["info"])),
           "piece_length" => metainfo["info"]["piece length"],
           "piece_hashes" =>
             for <<piece_hash::size(20)-binary <- metainfo["info"]["pieces"]>> do
@@ -133,6 +150,39 @@ defmodule Bittorrent.CLI do
               |> Enum.each(fn address -> IO.puts(address) end)
 
             addresses
+        end
+    end
+  end
+
+  defp handshake(filename, address) do
+    [ip, port] = String.split(address, ":")
+    {port, _} = Integer.parse(port)
+
+    info_map = info(filename)
+
+    handshake_packet =
+      <<19>> <>
+        "BitTorrent protocol" <>
+        <<0, 0, 0, 0, 0, 0, 0, 0>> <> info_map["info_hash"] <> @id
+
+    case :gen_tcp.connect(to_charlist(ip), port, [:binary, active: false]) do
+      {:error, reason} ->
+        {:error, reason}
+
+      {:ok, socket} ->
+        case :gen_tcp.send(socket, handshake_packet) do
+          {:error, reason} ->
+            {:error, reason}
+
+          _ ->
+            case :gen_tcp.recv(socket, 68) do
+              {:error, reason} ->
+                {:error, reason}
+
+              {:ok, packet} ->
+                <<_ignored::size(48)-binary, id::size(20)-binary>> = packet
+                Base.encode16(id, case: :lower)
+            end
         end
     end
   end
