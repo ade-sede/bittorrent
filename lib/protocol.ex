@@ -4,9 +4,9 @@ defmodule Bittorrent.Protocol do
   def discover_peers(file, client_id) do
     Req.get!(file.tracker_url,
       params: %{
-        "info_hash" => :crypto.hash(:sha, file.info_hash),
-        "peer_id" => client_id,
+        "info_hash" => file.info_hash,
         "port" => 6881,
+        "peer_id" => client_id,
         "uploaded" => 0,
         "downloaded" => 0,
         "left" => file.length,
@@ -32,15 +32,15 @@ defmodule Bittorrent.Protocol do
     end
   end
 
-  def handshake(address, hash, client_id) do
-    [host, port] = String.split(address, ":")
+  def handshake(peer_address, info_hash, client_id) do
+    [host, port] = String.split(peer_address, ":")
     {port, _} = Integer.parse(port)
 
     handshake_packet =
       <<19>> <>
         "BitTorrent protocol" <>
         <<0, 0, 0, 0, 0, 0, 0, 0>> <>
-        hash <>
+        info_hash <>
         client_id
 
     case :gen_tcp.connect(to_charlist(host), port, [:binary, active: false]) do
@@ -62,6 +62,30 @@ defmodule Bittorrent.Protocol do
                 {socket, Base.encode16(id, case: :lower)}
             end
         end
+    end
+  end
+
+  def parse_message(message) do
+    case message do
+      <<0, 0, 0, 0>> ->
+        :keep_alive
+
+      <<length::32, message_id::8, payload::binary>> when byte_size(payload) + 1 == length ->
+        case message_id do
+          0 -> {:choke, payload}
+          1 -> {:unchoke, payload}
+          2 -> {:interested, payload}
+          3 -> {:not_interested, payload}
+          4 -> {:have, payload}
+          5 -> {:bitfield, payload}
+          6 -> {:request, payload}
+          7 -> {:piece, payload}
+          8 -> {:cancel, payload}
+          _ -> {:unknown, payload}
+        end
+
+      <<length::32, _message_id::8, payload::binary>> ->
+        {:incomplete, length - byte_size(payload) - 1}
     end
   end
 end
