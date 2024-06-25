@@ -187,6 +187,87 @@ defmodule Bittorrent.CLI do
     end
   end
 
+  def main(["download" | tail]) do
+    case tail do
+      ["-o", output_filename, torrent_filename] ->
+        file = TorrentFile.parse(torrent_filename)
+
+        case file do
+          {:error, reason} ->
+            IO.puts(reason)
+
+          file ->
+            case Bittorrent.Protocol.discover_peers(file, @client_id) do
+              {:error, reason} ->
+                IO.puts(reason)
+
+              peers ->
+                queue_name = String.to_atom(Base.encode16(file.info_hash, case: :lower))
+
+                blocks =
+                  DownloadQueue.cut_file_into_blocks(
+                    file.length,
+                    length(file.piece_hashes),
+                    file.piece_length,
+                    @max_block_length
+                  )
+
+                peer_connections =
+                  Enum.map(peers, fn address ->
+                    %{
+                      id: address,
+                      start:
+                        {PeerConnection, :start_link,
+                         [{address, file.info_hash, @client_id, queue_name}]},
+                      restart: :temporary
+                    }
+                  end)
+
+                download_queue = %{
+                  id: queue_name,
+                  start:
+                    {DownloadQueue, :start_link,
+                     [%DownloadQueue{name: queue_name, to_download: blocks, parent: self()}]}
+                }
+
+                {:ok, pid} =
+                  Supervisor.start_link(
+                    [download_queue | peer_connections],
+                    strategy: :one_for_one,
+                    name: Bittorrent.Supervisor
+                  )
+
+                receive do
+                  {:done, blocks} ->
+                    Supervisor.stop(pid, :normal)
+
+                    bytes =
+                      Enum.sort(blocks, fn {p1, b1, _, _, _}, {p2, b2, _, _, _} ->
+                        cond do
+                          p1 < p2 -> true
+                          p1 > p2 -> false
+                          true -> b1 < b2
+                        end
+                      end)
+                      |> Enum.reduce("", fn {_, _, _, _, data}, acc -> acc <> data end)
+
+                    case File.write(output_filename, bytes) do
+                      {:error, reason} ->
+                        IO.puts(reason)
+                        System.halt(reason)
+
+                      :ok ->
+                        :ok
+                    end
+                end
+            end
+        end
+
+      _ ->
+        IO.puts("Usage: your_bittorrent.sh handshake <path/to/torrent/file> <ip>:<port>")
+    end
+  end
+
   def main([command | _]) do
     IO.puts("Unknown command: #{command}")
     System.halt(1)
