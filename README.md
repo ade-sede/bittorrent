@@ -1,6 +1,3 @@
-[![progress-banner](https://backend.codecrafters.io/progress/bittorrent/25cfe921-254b-42dd-8ba5-1bcc7883d451)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
-
-This is a starting point for Elixir solutions to the
 ["Build Your Own BitTorrent" Challenge](https://app.codecrafters.io/courses/bittorrent/overview).
 
 In this challenge, you’ll build a BitTorrent client that's capable of parsing a
@@ -8,29 +5,15 @@ In this challenge, you’ll build a BitTorrent client that's capable of parsing 
 about how torrent files are structured, HTTP trackers, BitTorrent’s Peer
 Protocol, pipelining and more.
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
 
-# Passing the first stage
+# Usage
 
-The entry point for your BitTorrent implementation is in `lib/bittorrent.ex`.
-Study and uncomment the relevant code, and push your changes to pass the first
-stage:
-
-```sh
-git add .
-git commit -m "pass 1st stage" # any msg
-git push origin master
+```bash
+$> ./your_bittorrent.sh download -o /tmp/file.txt sample.torrent
 ```
 
-Time to move on to the next stage!
+# TODO
 
-# Stage 2 & beyond
-
-Note: This section is for stages 2 and beyond.
-
-1. Ensure you have `mix` installed locally
-1. Run `./your_bittorrent.sh` to run your program, which is implemented in
-   `lib/bittorrent.ex`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+- General resiliency
+- Persist blocks to download / blocks downloaded
+- Test with torrents other than the challenge's example
