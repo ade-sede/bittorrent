@@ -6,7 +6,7 @@ defmodule Bittorrent.CLI do
   alias Bittorrent.PeerConnection
 
   @client_id :crypto.strong_rand_bytes(20)
-  @max_block_length: 16384
+  @max_block_length 16384
 
   def main(["decode" | tail]) do
     case tail do
@@ -120,8 +120,6 @@ defmodule Bittorrent.CLI do
               peers ->
                 queue_name = String.to_atom(Base.encode16(file.info_hash, case: :lower))
 
-                IO.inspect("#Pieces from file: #{length(file.piece_hashes)}")
-
                 blocks =
                   DownloadQueue.cut_file_into_blocks(
                     file.length,
@@ -132,8 +130,6 @@ defmodule Bittorrent.CLI do
                   |> Enum.filter(fn {p_idx, _, _, _} ->
                     p_idx == String.to_integer(piece_index)
                   end)
-
-                IO.inspect(blocks)
 
                 peer_connections =
                   Enum.map(peers, fn address ->
