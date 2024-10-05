@@ -8,24 +8,22 @@ defmodule Bittorrent.TorrentFile do
             piece_hashes: nil
 
   def parse(filename) do
-    File.read!(filename)
-    |> IO.iodata_to_binary()
-    |> Bencode.decode()
-    |> case do
-      {:error, reason} ->
-        {:error, reason}
-
-      {metainfo, _} ->
-        %Bittorrent.TorrentFile{
-          tracker_url: metainfo["announce"],
-          length: metainfo["info"]["length"],
-          info_hash: :crypto.hash(:sha, Bencode.encode(metainfo["info"])),
-          piece_length: metainfo["info"]["piece length"],
-          piece_hashes:
-            for <<piece_hash::size(20)-binary <- metainfo["info"]["pieces"]>> do
-              piece_hash
-            end
-        }
+    with {:ok, contents} <- File.read(filename),
+         {metainfo, _} <- Bencode.decode(contents) do
+      {:ok,
+       %Bittorrent.TorrentFile{
+         tracker_url: metainfo["announce"],
+         length: metainfo["info"]["length"],
+         info_hash: :crypto.hash(:sha, Bencode.encode(metainfo["info"])),
+         piece_length: metainfo["info"]["piece length"],
+         piece_hashes:
+           for <<piece_hash::binary-size(20) <- metainfo["info"]["pieces"]>> do
+             piece_hash
+           end
+       }}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, "Failed to parse torrent file"}
     end
   end
 end

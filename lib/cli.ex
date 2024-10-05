@@ -1,280 +1,202 @@
 defmodule Bittorrent.CLI do
-  alias Bittorrent.DownloadQueue
   alias Bittorrent.Bencode
   alias Bittorrent.TorrentFile
   alias Bittorrent.Protocol
   alias Bittorrent.PeerConnection
+  alias Bittorrent.DownloadQueue
 
   @client_id :crypto.strong_rand_bytes(20)
-  @max_block_length 16384
+  @colors [
+    :green,
+    :yellow,
+    :blue,
+    :magenta,
+    :cyan,
+    :white,
+    :black,
+    :light_red,
+    :light_green,
+    :light_yellow,
+    :light_blue,
+    :light_magenta,
+    :light_cyan
+  ]
 
-  def main(["decode" | tail]) do
-    case tail do
-      [str] ->
-        case Bencode.decode(str) do
-          {:error, reason} ->
-            IO.puts(reason)
+  def main(args) do
+    parse_args(args)
+  end
 
-          {decoded, remaining} ->
-            IO.puts(Jason.encode!(decoded))
+  defp parse_args(["decode" | [str]]) do
+    case Bencode.decode(str) do
+      {:error, reason} ->
+        IO.puts(reason)
 
-            if remaining != "" do
-              IO.puts("Warning ! Remaining data has not been decoded: #{remaining}")
-            end
-        end
+      {decoded, remaining} ->
+        IO.puts(Jason.encode!(decoded))
 
-      _ ->
-        IO.puts("Usage: your_bittorrent.sh decode <encoded_string>")
+        if remaining != "",
+          do: IO.puts("Warning! Remaining data has not been decoded: #{remaining}")
     end
   end
 
-  def main(["info" | tail]) do
-    case tail do
-      [filename] ->
-        file = TorrentFile.parse(filename)
+  defp parse_args(["info", filename]) do
+    case TorrentFile.parse(filename) do
+      {:error, reason} ->
+        IO.puts(reason)
 
-        case file do
-          {:error, reason} ->
-            IO.puts(reason)
-
-          file ->
-            IO.puts("Tracker URL: #{file.tracker_url}")
-            IO.puts("Length: #{file.length}")
-            IO.puts("Info Hash: #{Base.encode16(file.info_hash, case: :lower)}")
-            IO.puts("Piece Length: #{file.piece_length}")
-            IO.puts("Piece Hashes:")
-
-            Enum.each(file.piece_hashes, fn hash ->
-              Base.encode16(hash, case: :lower)
-              |> IO.puts()
-            end)
-        end
-
-      _ ->
-        IO.puts("Usage: your_bittorrent.sh info <path/to/torrent/file>")
+      {:ok, file} ->
+        IO.puts("Tracker URL: #{file.tracker_url}")
+        IO.puts("Length: #{file.length}")
+        IO.puts("Info Hash: #{Base.encode16(file.info_hash, case: :lower)}")
+        IO.puts("Piece Length: #{file.piece_length}")
+        IO.puts("Piece Hashes:")
+        Enum.each(file.piece_hashes, &IO.puts(Base.encode16(&1, case: :lower)))
     end
   end
 
-  def main(["peers" | tail]) do
-    case tail do
-      [filename] ->
-        file = TorrentFile.parse(filename)
+  defp parse_args(["peers", filename]) do
+    case TorrentFile.parse(filename) do
+      {:error, reason} ->
+        IO.puts(reason)
 
-        case file do
+      {:ok, file} ->
+        case Protocol.discover_peers(file, @client_id) do
           {:error, reason} ->
             IO.puts(reason)
 
-          file ->
-            case Protocol.discover_peers(file, @client_id) do
-              {:error, reason} ->
-                IO.puts(reason)
-
-              peers ->
-                Enum.each(peers, fn address -> IO.puts(address) end)
-            end
+          {:ok, peers} ->
+            Enum.each(peers, &IO.puts/1)
         end
-
-      _ ->
-        IO.puts("Usage: your_bittorrent.sh peers <path/to/torrent/file>")
     end
   end
 
-  def main(["handshake" | tail]) do
-    case tail do
-      [filename, address | _] ->
-        file = TorrentFile.parse(filename)
+  defp parse_args(["handshake", filename, peer_address]) do
+    case TorrentFile.parse(filename) do
+      {:error, reason} ->
+        IO.puts(reason)
 
-        case file do
+      {:ok, file} ->
+        case Protocol.handshake(peer_address, file.info_hash, @client_id) do
           {:error, reason} ->
             IO.puts(reason)
 
-          file ->
-            case Bittorrent.Protocol.handshake(address, file.info_hash, @client_id) do
-              {:error, reason} ->
-                IO.puts(reason)
-
-              {_, peer_id} ->
-                IO.puts("Peer ID: #{peer_id}")
-            end
+          {_socket, peer_id} ->
+            IO.puts("Peer ID: #{peer_id}")
         end
-
-      _ ->
-        IO.puts("Usage: your_bittorrent.sh handshake <path/to/torrent/file> <ip>:<port>")
     end
   end
 
-  def main(["download_piece" | tail]) do
-    case tail do
-      ["-o", output_filename, torrent_filename, piece_index] ->
-        file = TorrentFile.parse(torrent_filename)
+  defp parse_args(["download_piece", "-o", output_file, torrent_file, piece_index]) do
+    download_piece(torrent_file, String.to_integer(piece_index), output_file)
+  end
 
-        case file do
-          {:error, reason} ->
-            IO.puts(reason)
+  defp parse_args(["download", "-o", output_file, torrent_file]) do
+    download_file(torrent_file, output_file)
+  end
 
-          file ->
-            case Bittorrent.Protocol.discover_peers(file, @client_id) do
-              {:error, reason} ->
-                IO.puts(reason)
+  defp parse_args(_) do
+    IO.puts("Invalid command. Usage: your_bittorrent.sh <command> <args>")
+  end
 
-              peers ->
-                queue_name = String.to_atom(Base.encode16(file.info_hash, case: :lower))
+  defp download_piece(torrent_file, piece_index, output_file) do
+    with {:ok, file} <- TorrentFile.parse(torrent_file),
+         {:ok, peers} <- Protocol.discover_peers(file, @client_id),
+         {:ok, queue} <-
+           DownloadQueue.start_link(
+             {file.info_hash, file.piece_length, file.length, file.piece_hashes, self(),
+              piece_index}
+           ) do
+      peer_specs =
+        Enum.reduce(peers, {@colors, []}, fn peer, {colors, specs} ->
+          {color, remaining_colors} = assign_color(colors)
 
-                blocks =
-                  DownloadQueue.cut_file_into_blocks(
-                    file.length,
-                    length(file.piece_hashes),
-                    file.piece_length,
-                    @max_block_length
-                  )
-                  |> Enum.filter(fn {p_idx, _, _, _} ->
-                    p_idx == String.to_integer(piece_index)
-                  end)
+          new_peer_spec = %{
+            id: peer,
+            start:
+              {PeerConnection, :start_link,
+               [{peer, file.info_hash, @client_id, queue, file.piece_length, color}]}
+          }
 
-                peer_connections =
-                  Enum.map(peers, fn address ->
-                    %{
-                      id: address,
-                      start:
-                        {PeerConnection, :start_link,
-                         [{address, file.info_hash, @client_id, queue_name}]},
-                      restart: :temporary
-                    }
-                  end)
+          {remaining_colors, specs ++ [new_peer_spec]}
+        end)
+        |> elem(1)
 
-                download_queue = %{
-                  id: queue_name,
-                  start:
-                    {DownloadQueue, :start_link,
-                     [%DownloadQueue{name: queue_name, to_download: blocks, parent: self()}]}
-                }
+      {:ok, supervisor_pid} = Supervisor.start_link(peer_specs, strategy: :one_for_one)
 
-                {:ok, pid} =
-                  Supervisor.start_link(
-                    [download_queue | peer_connections],
-                    strategy: :one_for_one,
-                    name: Bittorrent.Supervisor
-                  )
-
-                receive do
-                  {:done, blocks} ->
-                    Supervisor.stop(pid, :normal)
-
-                    bytes =
-                      Enum.sort(blocks, fn {p1, b1, _, _, _}, {p2, b2, _, _, _} ->
-                        cond do
-                          p1 < p2 -> true
-                          p1 > p2 -> false
-                          true -> b1 < b2
-                        end
-                      end)
-                      |> Enum.reduce("", fn {_, _, _, _, data}, acc -> acc <> data end)
-
-                    case File.write(output_filename, bytes) do
-                      {:error, reason} ->
-                        IO.puts(reason)
-                        System.halt(reason)
-
-                      :ok ->
-                        :ok
-                    end
-                end
-            end
-        end
-
-      _ ->
-        IO.puts("Usage: your_bittorrent.sh handshake <path/to/torrent/file> <ip>:<port>")
+      receive do
+        {:done, ^piece_index, piece_data} ->
+          File.write!(output_file, piece_data)
+          Supervisor.stop(supervisor_pid)
+          IO.puts("Piece #{piece_index} downloaded to #{output_file}")
+      after
+        300_000 ->
+          Supervisor.stop(supervisor_pid)
+          IO.puts("Download timed out")
+      end
+    else
+      {:error, reason} -> IO.puts("Error: #{reason}")
     end
   end
 
-  def main(["download" | tail]) do
-    case tail do
-      ["-o", output_filename, torrent_filename] ->
-        file = TorrentFile.parse(torrent_filename)
+  defp download_file(torrent_file, output_file) do
+    with {:ok, file} <- TorrentFile.parse(torrent_file),
+         {:ok, peers} <- Protocol.discover_peers(file, @client_id),
+         {:ok, queue} <-
+           DownloadQueue.start_link(
+             {file.info_hash, file.piece_length, file.length, file.piece_hashes, self(), :all}
+           ) do
+      peer_specs =
+        Enum.reduce(peers, {@colors, []}, fn peer, {colors, specs} ->
+          {color, remaining_colors} = assign_color(colors)
 
-        case file do
-          {:error, reason} ->
-            IO.puts(reason)
+          new_peer_spec = %{
+            id: peer,
+            start:
+              {PeerConnection, :start_link,
+               [{peer, file.info_hash, @client_id, queue, file.piece_length, color}]}
+          }
 
-          file ->
-            case Bittorrent.Protocol.discover_peers(file, @client_id) do
-              {:error, reason} ->
-                IO.puts(reason)
+          {remaining_colors, specs ++ [new_peer_spec]}
+        end)
+        |> elem(1)
 
-              peers ->
-                queue_name = String.to_atom(Base.encode16(file.info_hash, case: :lower))
+      {:ok, supervisor_pid} = Supervisor.start_link(peer_specs, strategy: :one_for_one)
 
-                blocks =
-                  DownloadQueue.cut_file_into_blocks(
-                    file.length,
-                    length(file.piece_hashes),
-                    file.piece_length,
-                    @max_block_length
-                  )
+      pieces = gather_pieces(%{}, length(file.piece_hashes))
 
-                peer_connections =
-                  Enum.map(peers, fn address ->
-                    %{
-                      id: address,
-                      start:
-                        {PeerConnection, :start_link,
-                         [{address, file.info_hash, @client_id, queue_name}]},
-                      restart: :temporary
-                    }
-                  end)
+      ordered_data =
+        pieces
+        |> Map.to_list()
+        |> Enum.sort_by(&elem(&1, 0))
+        |> Enum.map(&elem(&1, 1))
+        |> Enum.join()
 
-                download_queue = %{
-                  id: queue_name,
-                  start:
-                    {DownloadQueue, :start_link,
-                     [%DownloadQueue{name: queue_name, to_download: blocks, parent: self()}]}
-                }
-
-                {:ok, pid} =
-                  Supervisor.start_link(
-                    [download_queue | peer_connections],
-                    strategy: :one_for_one,
-                    name: Bittorrent.Supervisor
-                  )
-
-                receive do
-                  {:done, blocks} ->
-                    Supervisor.stop(pid, :normal)
-
-                    bytes =
-                      Enum.sort(blocks, fn {p1, b1, _, _, _}, {p2, b2, _, _, _} ->
-                        cond do
-                          p1 < p2 -> true
-                          p1 > p2 -> false
-                          true -> b1 < b2
-                        end
-                      end)
-                      |> Enum.reduce("", fn {_, _, _, _, data}, acc -> acc <> data end)
-
-                    case File.write(output_filename, bytes) do
-                      {:error, reason} ->
-                        IO.puts(reason)
-                        System.halt(reason)
-
-                      :ok ->
-                        :ok
-                    end
-                end
-            end
-        end
-
-      _ ->
-        IO.puts("Usage: your_bittorrent.sh handshake <path/to/torrent/file> <ip>:<port>")
+      File.write!(output_file, ordered_data)
+      Supervisor.stop(supervisor_pid)
+      IO.puts("Downloaded #{torrent_file} to #{output_file}")
+    else
+      {:error, reason} -> IO.puts("Error: #{reason}")
     end
   end
 
-  def main([command | _]) do
-    IO.puts("Unknown command: #{command}")
-    System.halt(1)
+  defp gather_pieces(pieces, total_pieces) when map_size(pieces) == total_pieces do
+    pieces
   end
 
-  def main([]) do
-    IO.puts("Usage: your_bittorrent.sh <command> <args>")
-    System.halt(1)
+  defp gather_pieces(pieces, total_pieces) do
+    receive do
+      {:done, piece_index, piece_data} ->
+        gather_pieces(Map.put(pieces, piece_index, piece_data), total_pieces)
+
+      :all_pieces_completed ->
+        pieces
+    after
+      300_000 ->
+        IO.puts("Download timed out")
+        pieces
+    end
   end
+
+  defp assign_color([]), do: {:black, []}
+  defp assign_color([color | rest]), do: {color, rest}
 end

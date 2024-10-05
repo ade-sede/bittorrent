@@ -1,184 +1,247 @@
 defmodule Bittorrent.PeerConnection do
   use GenServer
   alias Bittorrent.Protocol
+  alias Bittorrent.PeerState
 
-  defstruct socket: nil,
-            peer_id: nil,
-            queue: nil,
-            block: nil,
-            is_choked: true,
-            interested_flag: false,
-            bitfield: nil
+  @max_concurrent_requests 10
+
+  defstruct [
+    :socket,
+    :peer_state,
+    :info_hash,
+    :client_id,
+    :queue,
+    :max_block_length,
+    :color
+  ]
 
   def start_link(args) do
     GenServer.start_link(__MODULE__, args)
   end
 
   @impl true
-  def terminate(_reason, _state) do
-    :ok
-  end
-
-  @impl true
-  def init({peer_address, info_hash, client_id, queue}) do
-    IO.puts("Initializing peer connection")
-
+  def init({peer_address, info_hash, client_id, queue, max_block_length, color}) do
     case Protocol.handshake(peer_address, info_hash, client_id) do
       {:error, reason} ->
-        IO.puts(reason)
-        # we don't mind if some of the peers are not responding as long as some of them are
+        log(color, "Failed handshake with peer #{peer_address}: #{reason}")
         :ignore
 
       {socket, peer_id} ->
-        IO.puts("Established connection to peer #{peer_id}")
         :inet.setopts(socket, active: :once)
+        log(color, "Connected to peer: #{peer_address}")
 
-        initial_state =
-          %Bittorrent.PeerConnection{
-            socket: socket,
-            peer_id: peer_id,
-            queue: queue
-          }
+        state = %__MODULE__{
+          socket: socket,
+          peer_state: PeerState.new(peer_id),
+          info_hash: info_hash,
+          client_id: client_id,
+          queue: queue,
+          max_block_length: max_block_length,
+          color: color
+        }
 
-        {:ok, initial_state}
+        {:ok, state, {:continue, :request_bitfield}}
     end
   end
 
   @impl true
-  def handle_info({:tcp_closed, _socket}, state) do
-    IO.puts("Connection to peer #{state.peer_id} has been closed")
-    {:stop, :normal, state}
+  def handle_continue(:request_bitfield, state) do
+    log(state.color, "Sending interested message")
+
+    case send_message(state.socket, :interested, state.color) do
+      {:error, reason} ->
+        log(state.color, "Error when sending interested flag: #{reason}")
+        {:stop, reason}
+
+      _ ->
+        new_peer_state = PeerState.am_interested(state.peer_state)
+        {:noreply, %{state | peer_state: new_peer_state}}
+    end
   end
 
   @impl true
   def handle_info({:tcp, socket, data}, state) do
-    case Protocol.parse_message(data) do
+    log(state.color, "Received TCP data: #{inspect(data, limit: 50)}")
+    new_state = handle_message(data, state)
+    :inet.setopts(socket, active: :once)
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info({:tcp_closed, _socket}, state) do
+    log(state.color, "Connection closed")
+    {:stop, :normal, state}
+  end
+
+  defp handle_message(data, state) do
+    case Protocol.decode_message(data) do
       :keep_alive ->
-        :inet.setopts(socket, active: :once)
-        {:noreply, state}
+        log(state.color, "Received keep-alive")
+        state
 
-      # A message may exceed a tcp segment
-      {:incomplete, n} ->
-        case :gen_tcp.recv(socket, n) do
+      {:bitfield, payload} ->
+        log(state.color, "Received bitfield: #{inspect(payload, limit: 50)}")
+        new_peer_state = PeerState.set_piece_availability(state.peer_state, payload)
+        new_state = %{state | peer_state: new_peer_state}
+        request_pieces(new_state)
+
+      {:unchoke, _} ->
+        log(state.color, "Peer unchoked us")
+        new_peer_state = PeerState.peer_unchoke(state.peer_state)
+        new_state = %{state | peer_state: new_peer_state}
+        request_pieces(new_state)
+
+      {:choke, _} ->
+        log(state.color, "Peer choked us")
+        new_peer_state = PeerState.peer_choke(state.peer_state)
+        %{state | peer_state: new_peer_state}
+
+      {:have, <<piece::32>>} ->
+        log(state.color, "Peer has piece #{piece}")
+        new_peer_state = PeerState.update_available_piece(state.peer_state, piece)
+        new_state = %{state | peer_state: new_peer_state}
+        maybe_request_piece(new_state, piece)
+
+      {:piece, <<index::32, begin::32, block::binary>>} ->
+        log(state.color, "Received piece #{index}, offset #{begin}, length #{byte_size(block)}")
+        new_state = handle_received_piece(state, index, begin, block)
+        request_pieces(new_state)
+
+      {:reject_request, index, begin, length} ->
+        log(
+          state.color,
+          "Peer rejected request for piece #{index}, offset #{begin}, length #{length}"
+        )
+
+        new_peer_state = PeerState.remove_request(state.peer_state, index, begin)
+        GenServer.call(state.queue, {:reset_block, index, begin, length})
+        new_state = %{state | peer_state: new_peer_state}
+        request_pieces(new_state)
+
+      {:incomplete, missing} ->
+        log(state.color, "Missing bytes count: #{missing}")
+
+        case :gen_tcp.recv(state.socket, missing) do
           {:error, reason} ->
+            log(:red, "Error while receiving remainder of message: #{reason}")
             {:stop, reason}
 
-          {:ok, packet} ->
-            :inet.setopts(socket, active: :once)
-            handle_info({:tcp, socket, data <> packet}, state)
+          {:ok, remaining_data} ->
+            log(state.color, "Collected missing data: #{byte_size(remaining_data)}")
+            handle_message(data <> remaining_data, state)
         end
 
-      {:unknown, _} ->
-        {:stop, "Received unsupported message type"}
-
-      {message_id, payload} ->
-        :inet.setopts(socket, active: :once)
-        GenServer.cast(self(), {message_id, payload})
-        {:noreply, state}
+      msg ->
+        log(state.color, "Received unknown message: #{inspect(msg)}")
+        state
     end
   end
 
-  @impl true
-  def handle_cast({:choke, _}, state) do
-    IO.puts("Peer #{state.peer_id} is choked")
-    {:noreply, %{state | is_choked: true}}
-  end
+  defp maybe_request_piece(state, piece) do
+    if PeerState.can_request?(state.peer_state, @max_concurrent_requests) do
+      case GenServer.call(state.queue, {:need_piece?, piece}) do
+        true ->
+          log(state.color, "Requesting specific piece #{piece}")
+          request_specific_piece(state, piece)
 
-  @impl true
-  def handle_cast({:unchoke, _}, state) do
-    IO.puts("Peer #{state.peer_id} is unchoked")
-    GenServer.cast(self(), :request_block)
-    {:noreply, %{state | is_choked: false}}
-  end
-
-  @impl true
-  def handle_cast({:bitfield, payload}, state) do
-    IO.puts("Received bitfield: #{inspect(payload)}")
-    GenServer.cast(self(), :start_download)
-    {:noreply, %{state | bitfield: payload}}
-  end
-
-  @impl true
-  def handle_cast({:piece, payload}, state) do
-    <<piece_index::32, block_offset::32, data::binary>> = payload
-
-    {_, expected_block_index, _, expected_block_size} =
-      state.block
-
-    IO.puts("Received piece: index #{piece_index}, block #{expected_block_index}")
-
-    GenServer.call(
-      state.queue,
-      {:downloaded, {piece_index, expected_block_index, block_offset, expected_block_size, data}}
-    )
-
-    GenServer.cast(self(), :start_download)
-    {:noreply, %{state | block: nil}}
-  end
-
-  @impl true
-  def handle_cast(:request_block, state) do
-    IO.puts("Requesting block")
-
-    case {state.is_choked, state.block} do
-      {true, _} ->
-        {:stop, "Currently chocked"}
-
-      {_, nil} ->
-        {:stop, "No block set to download"}
-
-      {_, {piece_index, _block_index, block_offset, block_size}} ->
-        request_message =
-          <<0, 0, 0, 13, 6, piece_index::32, block_offset::32, block_size::32>>
-
-        case :gen_tcp.send(state.socket, request_message) do
-          {:error, reason} ->
-            {:stop, reason}
-
-          :ok ->
-            {:noreply, state}
-        end
+        false ->
+          log(state.color, "Piece #{piece} not needed")
+          state
+      end
+    else
+      log(state.color, "Cannot request more pieces at the moment")
+      state
     end
   end
 
-  @impl true
-  def handle_cast(:start_download, state) do
-    case GenServer.call(state.queue, :get_one_to_download) do
+  defp request_pieces(state) do
+    available_slots = @max_concurrent_requests - PeerState.request_count(state.peer_state)
+    log(state.color, "Requesting pieces, available slots: #{available_slots}")
+
+    Enum.reduce_while(1..available_slots, state, fn _, acc ->
+      if PeerState.can_request?(acc.peer_state, @max_concurrent_requests) do
+        case GenServer.call(acc.queue, :get_block_to_download) do
+          nil ->
+            log(acc.color, "No more blocks to download")
+            new_peer_state = PeerState.am_not_interested(state.peer_state)
+            {:halt, %{acc | peer_state: new_peer_state}}
+
+          {piece_index, block_offset, block_length} ->
+            log(
+              acc.color,
+              "Requesting piece #{piece_index}, offset #{block_offset}, length #{block_length}"
+            )
+
+            new_peer_state =
+              PeerState.add_request(acc.peer_state, piece_index, block_offset, block_length)
+
+            new_state = %{acc | peer_state: new_peer_state}
+
+            send_message(
+              new_state.socket,
+              {:request, piece_index, block_offset, block_length},
+              new_state.color
+            )
+
+            {:cont, new_state}
+        end
+      else
+        log(acc.color, "Cannot request more pieces")
+        {:halt, acc}
+      end
+    end)
+  end
+
+  defp request_specific_piece(state, piece_index) do
+    case GenServer.call(state.queue, {:get_block, piece_index}) do
       nil ->
-        case :gen_tcp.send(state.socket, <<0, 0, 0, 1, 3>>) do
-          {:error, reason} ->
-            {:stop, reason}
+        log(state.color, "No blocks available for piece #{piece_index}")
+        state
 
-          :ok ->
-            {:noreply, %{state | interested_flag: false}}
-        end
+      {block_offset, block_length} ->
+        log(
+          state.color,
+          "Requesting specific piece #{piece_index}, offset #{block_offset}, length #{block_length}"
+        )
 
-      block ->
-        case state.interested_flag do
-          false ->
-            case :gen_tcp.send(state.socket, <<0, 0, 0, 1, 2>>) do
-              {:error, reason} ->
-                {:stop, reason}
+        new_peer_state =
+          PeerState.add_request(state.peer_state, piece_index, block_offset, block_length)
 
-              :ok ->
-                {:noreply, %{state | block: block, interested_flag: true}}
-            end
+        new_state = %{state | peer_state: new_peer_state}
 
-          true ->
-            case state.is_choked do
-              false ->
-                GenServer.cast(self(), :request_block)
-                {:noreply, %{state | block: block}}
+        send_message(
+          new_state.socket,
+          {:request, piece_index, block_offset, block_length},
+          new_state.color
+        )
 
-              true ->
-                {:noreply, %{state | block: block}}
-            end
-        end
+        new_state
     end
   end
 
-  @impl true
-  def handle_cast({message_id, _}, _) do
-    {:stop, "Received unsupported message ID #{message_id}"}
+  defp handle_received_piece(state, index, begin, block) do
+    new_peer_state = PeerState.remove_request(state.peer_state, index, begin)
+    new_state = %{state | peer_state: new_peer_state}
+
+    GenServer.call(state.queue, {:block_received, index, begin, block})
+
+    request_pieces(new_state)
+  end
+
+  defp send_message(socket, message, color) do
+    case Protocol.encode_message(message) do
+      {:ok, encoded} ->
+        result = :gen_tcp.send(socket, encoded)
+        log(color, "Sent message: #{inspect(message)}, result: #{inspect(result)}")
+        result
+
+      {:error, reason} ->
+        log(color, "Failed to encode message: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp log(color, message) do
+    IO.puts(IO.ANSI.format([color, "#{inspect(self())} - #{message}", :reset]))
   end
 end
