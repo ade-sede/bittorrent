@@ -1,6 +1,6 @@
 defmodule Bittorrent.CLI do
   alias Bittorrent.Bencode
-  alias Bittorrent.TorrentFile
+  alias Bittorrent.TorrentInfo
   alias Bittorrent.Protocol
   alias Bittorrent.PeerConnection
   alias Bittorrent.DownloadQueue
@@ -40,7 +40,7 @@ defmodule Bittorrent.CLI do
   end
 
   defp parse_args(["info", filename]) do
-    case TorrentFile.parse(filename) do
+    case TorrentInfo.parse_file(filename) do
       {:error, reason} ->
         IO.puts(reason)
 
@@ -55,7 +55,7 @@ defmodule Bittorrent.CLI do
   end
 
   defp parse_args(["peers", filename]) do
-    case TorrentFile.parse(filename) do
+    case TorrentInfo.parse_file(filename) do
       {:error, reason} ->
         IO.puts(reason)
 
@@ -71,7 +71,7 @@ defmodule Bittorrent.CLI do
   end
 
   defp parse_args(["handshake", filename, peer_address]) do
-    case TorrentFile.parse(filename) do
+    case TorrentInfo.parse_file(filename) do
       {:error, reason} ->
         IO.puts(reason)
 
@@ -94,12 +94,21 @@ defmodule Bittorrent.CLI do
     download_file(torrent_file, output_file)
   end
 
+  defp parse_args(["magnet_parse", magnet_link]) do
+    with {:ok, file} <- TorrentInfo.from_magnet_link(magnet_link) do
+      IO.puts("Tracker URL: #{file.tracker_url}")
+      IO.puts("Info Hash: #{Base.encode16(file.info_hash, case: :lower)}")
+    else
+      {:error, reason} -> IO.puts("Error: #{reason}")
+    end
+  end
+
   defp parse_args(_) do
     IO.puts("Invalid command. Usage: your_bittorrent.sh <command> <args>")
   end
 
   defp download_piece(torrent_file, piece_index, output_file) do
-    with {:ok, file} <- TorrentFile.parse(torrent_file),
+    with {:ok, file} <- TorrentInfo.parse_file(torrent_file),
          {:ok, peers} <- Protocol.discover_peers(file, @client_id),
          {:ok, queue} <-
            DownloadQueue.start_link(
@@ -139,7 +148,7 @@ defmodule Bittorrent.CLI do
   end
 
   defp download_file(torrent_file, output_file) do
-    with {:ok, file} <- TorrentFile.parse(torrent_file),
+    with {:ok, file} <- TorrentInfo.parse_file(torrent_file),
          {:ok, peers} <- Protocol.discover_peers(file, @client_id),
          {:ok, queue} <-
            DownloadQueue.start_link(
