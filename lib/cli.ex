@@ -103,6 +103,17 @@ defmodule Bittorrent.CLI do
     end
   end
 
+  defp parse_args(["magnet_handshake", magnet_link]) do
+    with {:ok, file} <- TorrentInfo.from_magnet_link(magnet_link),
+         {:ok, peers} <- Protocol.discover_peers(file, @client_id),
+         [peer_address] <- peers,
+         {_, peer_id} <- Protocol.handshake(peer_address, file.info_hash, @client_id) do
+      IO.puts("Peer ID: #{peer_id}")
+    else
+      {:error, reason} -> IO.puts("Error: #{reason}")
+    end
+  end
+
   defp parse_args(_) do
     IO.puts("Invalid command. Usage: your_bittorrent.sh <command> <args>")
   end

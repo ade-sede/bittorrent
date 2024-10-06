@@ -44,7 +44,7 @@ defmodule Bittorrent.Protocol do
     handshake_packet =
       <<19>> <>
         "BitTorrent protocol" <>
-        <<0, 0, 0, 0, 0, 0, 0, 0>> <>
+        <<0, 0, 0, 0, 0, 16, 0, 0>> <>
         info_hash <>
         client_id
 

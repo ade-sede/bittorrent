@@ -40,6 +40,8 @@ defmodule Bittorrent.TorrentInfo do
        %__MODULE__{
          tracker_url: query["tr"],
          file_name: query["dn"],
+         # length placeholder per documentation
+         length: 1,
          info_hash: decoded_hash
        }}
     else
