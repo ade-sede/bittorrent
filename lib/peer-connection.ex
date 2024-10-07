@@ -1,5 +1,6 @@
 defmodule Bittorrent.PeerConnection do
   use GenServer
+  require Bittorrent.Protocol
   alias Bittorrent.Protocol
   alias Bittorrent.PeerState
 
@@ -10,6 +11,7 @@ defmodule Bittorrent.PeerConnection do
     :peer_state,
     :info_hash,
     :client_id,
+    :extensions,
     :queue,
     :max_block_length,
     :color
@@ -26,7 +28,7 @@ defmodule Bittorrent.PeerConnection do
         log(color, "Failed handshake with peer #{peer_address}: #{reason}")
         :ignore
 
-      {socket, peer_id} ->
+      {socket, peer_id, extensions} ->
         :inet.setopts(socket, active: :once)
         log(color, "Connected to peer: #{peer_address}")
 
@@ -35,6 +37,7 @@ defmodule Bittorrent.PeerConnection do
           peer_state: PeerState.new(peer_id),
           info_hash: info_hash,
           client_id: client_id,
+          extensions: extensions,
           queue: queue,
           max_block_length: max_block_length,
           color: color
@@ -83,6 +86,22 @@ defmodule Bittorrent.PeerConnection do
         log(state.color, "Received bitfield: #{inspect(payload, limit: 50)}")
         new_peer_state = PeerState.set_piece_availability(state.peer_state, payload)
         new_state = %{state | peer_state: new_peer_state}
+
+        if MapSet.member?(new_state.extensions, Protocol.extension_protocol()) do
+          log(new_state.color, "Peer supports extension protocol !")
+
+          send_message(
+            new_state.socket,
+            {:extension,
+             %{
+               "m" => %{
+                 ut_metadata: 999
+               }
+             }},
+            new_state.color
+          )
+        end
+
         request_pieces(new_state)
 
       {:unchoke, _} ->

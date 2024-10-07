@@ -1,9 +1,12 @@
 defmodule Bittorrent.CLI do
+  require Bittorrent.Protocol
   alias Bittorrent.Bencode
   alias Bittorrent.TorrentInfo
   alias Bittorrent.Protocol
   alias Bittorrent.PeerConnection
   alias Bittorrent.DownloadQueue
+
+  @magnet_extensions [Protocol.extension_protocol()]
 
   @client_id :crypto.strong_rand_bytes(20)
   @colors [
@@ -80,7 +83,7 @@ defmodule Bittorrent.CLI do
           {:error, reason} ->
             IO.puts(reason)
 
-          {_socket, peer_id} ->
+          {_socket, peer_id, _extensions} ->
             IO.puts("Peer ID: #{peer_id}")
         end
     end
@@ -107,7 +110,8 @@ defmodule Bittorrent.CLI do
     with {:ok, file} <- TorrentInfo.from_magnet_link(magnet_link),
          {:ok, peers} <- Protocol.discover_peers(file, @client_id),
          [peer_address] <- peers,
-         {_, peer_id} <- Protocol.handshake(peer_address, file.info_hash, @client_id) do
+         {_, peer_id, _} <-
+           Protocol.handshake(peer_address, file.info_hash, @client_id, @magnet_extensions) do
       IO.puts("Peer ID: #{peer_id}")
     else
       {:error, reason} -> IO.puts("Error: #{reason}")
