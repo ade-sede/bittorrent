@@ -4,7 +4,6 @@
 # unless you really need them.
 debug: true
 
-
 # Use this to change the Elixir version used to run your code
 # on Codecrafters.
 #
