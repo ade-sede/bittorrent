@@ -6,8 +6,6 @@ defmodule Bittorrent.CLI do
   alias Bittorrent.PeerConnection
   alias Bittorrent.DownloadQueue
 
-  @magnet_extensions [Protocol.extension_protocol()]
-
   @client_id :crypto.strong_rand_bytes(20)
   @colors [
     :green,
@@ -24,6 +22,8 @@ defmodule Bittorrent.CLI do
     :light_magenta,
     :light_cyan
   ]
+
+  @magnet_extensions [Protocol.extension_protocol()]
 
   def main(args) do
     parse_args(args)
@@ -79,7 +79,7 @@ defmodule Bittorrent.CLI do
         IO.puts(reason)
 
       {:ok, file} ->
-        case Protocol.handshake(peer_address, file.info_hash, @client_id) do
+        case Protocol.handshake(peer_address, file.info_hash, @client_id, []) do
           {:error, reason} ->
             IO.puts(reason)
 
@@ -109,12 +109,31 @@ defmodule Bittorrent.CLI do
   defp parse_args(["magnet_handshake", magnet_link]) do
     with {:ok, file} <- TorrentInfo.from_magnet_link(magnet_link),
          {:ok, peers} <- Protocol.discover_peers(file, @client_id),
-         [peer_address] <- peers,
-         {_, peer_id, _} <-
-           Protocol.handshake(peer_address, file.info_hash, @client_id, @magnet_extensions) do
-      IO.puts("Peer ID: #{peer_id}")
-    else
-      {:error, reason} -> IO.puts("Error: #{reason}")
+         [peer | _] <- peers,
+         {:ok, queue} <-
+           DownloadQueue.start_link({file.info_hash, nil, nil, [], self(), :all}) do
+      peer_spec = %{
+        id: peer,
+        start:
+          {PeerConnection, :start_link,
+           [{peer, file.info_hash, @client_id, self(), queue, @magnet_extensions, :blue}]}
+      }
+
+      {:ok, supervisor_pid} = Supervisor.start_link([peer_spec], strategy: :one_for_one)
+
+      receive do
+        {:peer_id, peer_id} ->
+          IO.puts("Peer ID: #{peer_id}")
+
+          receive do
+            :extension_handshake_sent ->
+              Supervisor.stop(supervisor_pid)
+          end
+      after
+        10_000 ->
+          IO.puts("Timeout")
+          Supervisor.stop(supervisor_pid)
+      end
     end
   end
 
@@ -138,7 +157,7 @@ defmodule Bittorrent.CLI do
             id: peer,
             start:
               {PeerConnection, :start_link,
-               [{peer, file.info_hash, @client_id, queue, file.piece_length, color}]}
+               [{peer, file.info_hash, @client_id, self(), queue, [], color}]}
           }
 
           {remaining_colors, specs ++ [new_peer_spec]}
@@ -177,7 +196,7 @@ defmodule Bittorrent.CLI do
             id: peer,
             start:
               {PeerConnection, :start_link,
-               [{peer, file.info_hash, @client_id, queue, file.piece_length, color}]}
+               [{peer, file.info_hash, @client_id, self(), queue, [], color}]}
           }
 
           {remaining_colors, specs ++ [new_peer_spec]}

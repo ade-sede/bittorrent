@@ -43,7 +43,7 @@ defmodule Bittorrent.Protocol do
     end
   end
 
-  def handshake(peer_address, info_hash, client_id, extensions \\ []) do
+  def handshake(peer_address, info_hash, client_id, extensions) do
     with [host, port] <- String.split(peer_address, ":"),
          {port, _} <- Integer.parse(port),
          handshake_packet <-
@@ -68,23 +68,32 @@ defmodule Bittorrent.Protocol do
         {:reject_request, index, begin, length}
 
       <<length::32, message_id::8, payload::binary>> when byte_size(payload) + 1 == length ->
-        case message_id do
-          0 -> {:choke, payload}
-          1 -> {:unchoke, payload}
-          2 -> {:interested, payload}
-          3 -> {:not_interested, payload}
-          4 -> {:have, payload}
-          5 -> {:bitfield, payload}
-          6 -> {:request, payload}
-          7 -> {:piece, payload}
-          8 -> {:cancel, payload}
-          _ -> {:unknown, payload}
-        end
+        {decode_message_id(message_id), payload}
 
-      <<length::32, _message_id::8, payload::binary>> ->
+      # TCP frames are limited in size.
+      # We may receive less than what is specified in length.
+      <<length::32, _message_id::8, payload::binary>> when byte_size(payload) + 1 < length ->
         {:incomplete, length - byte_size(payload) - 1}
+
+      # Or we may receive several messages in 1 frame
+      <<length::32, message_id::8, payload::binary>> when byte_size(payload) + 1 > length ->
+        expected_payload_size = length - 1
+
+        <<current_payload::binary-size(expected_payload_size), rest::binary>> = payload
+        {:overflow, {decode_message_id(message_id), current_payload}, rest}
     end
   end
+
+  defp decode_message_id(0), do: :choke
+  defp decode_message_id(1), do: :unchoke
+  defp decode_message_id(2), do: :interested
+  defp decode_message_id(3), do: :not_interested
+  defp decode_message_id(4), do: :have
+  defp decode_message_id(5), do: :bitfield
+  defp decode_message_id(6), do: :request
+  defp decode_message_id(7), do: :piece
+  defp decode_message_id(8), do: :cancel
+  defp decode_message_id(_), do: :unknown
 
   def encode_message(message) do
     case message do
@@ -121,9 +130,9 @@ defmodule Bittorrent.Protocol do
 
       {:extension, dictionary} ->
         encoded_dict = Bencode.encode(dictionary)
-        length = 4 + byte_size(encoded_dict) + 2
+        length = byte_size(encoded_dict) + 2
 
-        <<length::32, 20, 0, encoded_dict>>
+        {:ok, <<length::32, 20, 0, encoded_dict::binary>>}
 
       _ ->
         {:error, :unknown_message_type}

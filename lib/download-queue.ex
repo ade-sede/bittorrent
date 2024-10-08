@@ -16,7 +16,10 @@ defmodule Bittorrent.DownloadQueue do
 
   @impl true
   def init({info_hash, piece_length, total_length, pieces, parent, piece_to_download}) do
-    blocks = initialize_blocks(pieces, piece_length, total_length)
+    blocks =
+      if Enum.count(pieces) > 0,
+        do: initialize_blocks(pieces, piece_length, total_length),
+        else: %{}
 
     blocks =
       case piece_to_download do
@@ -71,6 +74,16 @@ defmodule Bittorrent.DownloadQueue do
   def handle_call({:need_piece?, piece_index}, _from, state) do
     need_piece = not Map.get(state.blocks, piece_index).completed
     {:reply, need_piece, state}
+  end
+
+  @impl true
+  def handle_call(:available_to_download?, _from, state) do
+    available_to_download =
+      state.blocks
+      |> Map.to_list()
+      |> Enum.any?(fn {_, piece} -> piece.completed == false end)
+
+    {:reply, available_to_download, state}
   end
 
   @impl true

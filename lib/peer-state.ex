@@ -1,20 +1,24 @@
 defmodule Bittorrent.PeerState do
   import Bitwise
+  alias Bittorrent.Protocol
+  require Bittorrent.Protocol
 
   defstruct [
     :peer_id,
     :available_pieces,
     :peer_choking,
     :am_interested,
+    :extensions,
     :active_requests
   ]
 
-  def new(peer_id) do
+  def new(peer_id, extensions) do
     %__MODULE__{
       peer_id: peer_id,
       available_pieces: MapSet.new(),
       peer_choking: true,
       am_interested: false,
+      extensions: extensions,
       active_requests: %{}
     }
   end
@@ -64,5 +68,9 @@ defmodule Bittorrent.PeerState do
 
   def request_count(state) do
     map_size(state.active_requests)
+  end
+
+  def extension_protocol_enabled?(state) do
+    MapSet.member?(state.extensions, Protocol.extension_protocol())
   end
 end
