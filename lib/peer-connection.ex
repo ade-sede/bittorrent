@@ -1,7 +1,7 @@
 defmodule Bittorrent.PeerConnection do
   use GenServer
   alias Bittorrent.Protocol
-  alias Bittorrent.Protocol
+  alias Bittorrent.Bencode
   alias Bittorrent.PeerState
 
   @max_concurrent_requests 10
@@ -162,6 +162,16 @@ defmodule Bittorrent.PeerConnection do
         GenServer.call(state.queue, {:reset_block, index, begin, length})
         new_state = %{state | peer_state: new_peer_state}
         request_pieces(new_state)
+
+      {:extension, extension} ->
+        case extension do
+          {:handshake, dict} ->
+            {dict, _} = Bencode.decode(dict)
+            send(state.parent, {:peer_ut_metadata, dict["m"]["ut_metadata"]})
+
+          {:unknown, _payload} ->
+            log(:red, "Unknown extension messages")
+        end
 
       {:incomplete, missing} ->
         log(state.color, "Missing bytes count: #{missing}")

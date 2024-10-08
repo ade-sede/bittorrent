@@ -68,7 +68,7 @@ defmodule Bittorrent.Protocol do
         {:reject_request, index, begin, length}
 
       <<length::32, message_id::8, payload::binary>> when byte_size(payload) + 1 == length ->
-        {decode_message_id(message_id), payload}
+        _decode_message(message_id, payload)
 
       # TCP frames are limited in size.
       # We may receive less than what is specified in length.
@@ -80,7 +80,21 @@ defmodule Bittorrent.Protocol do
         expected_payload_size = length - 1
 
         <<current_payload::binary-size(expected_payload_size), rest::binary>> = payload
-        {:overflow, {decode_message_id(message_id), current_payload}, rest}
+        message = _decode_message(message_id, current_payload)
+        {:overflow, message, rest}
+    end
+  end
+
+  defp _decode_message(id, payload) do
+    case decode_message_id(id) do
+      :extension ->
+        <<extension_id::8, payload::binary>> = payload
+        extension_id = decode_extension_message_id(extension_id)
+
+        {:extension, {extension_id, payload}}
+
+      id ->
+        {id, payload}
     end
   end
 
@@ -93,7 +107,11 @@ defmodule Bittorrent.Protocol do
   defp decode_message_id(6), do: :request
   defp decode_message_id(7), do: :piece
   defp decode_message_id(8), do: :cancel
+  defp decode_message_id(20), do: :extension
   defp decode_message_id(_), do: :unknown
+
+  defp decode_extension_message_id(0), do: :handshake
+  defp decode_extension_message_id(_), do: :unknown
 
   def encode_message(message) do
     case message do

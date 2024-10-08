@@ -126,7 +126,8 @@ defmodule Bittorrent.CLI do
           IO.puts("Peer ID: #{peer_id}")
 
           receive do
-            :extension_handshake_sent ->
+            {:peer_ut_metadata, extension_id} ->
+              IO.puts("Peer Metadata Extension ID: #{extension_id}")
               Supervisor.stop(supervisor_pid)
           end
       after
