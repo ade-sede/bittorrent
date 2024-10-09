@@ -152,6 +152,12 @@ defmodule Bittorrent.Protocol do
 
         {:ok, <<length::32, 20, 0, encoded_dict::binary>>}
 
+      {:request_metadata, piece_index, extension_id} ->
+        encoded_dict = Bencode.encode(%{"msg_type" => 0, "piece" => piece_index})
+        length = byte_size(encoded_dict) + 2
+
+        {:ok, <<length::32, 20, extension_id, encoded_dict::binary>>}
+
       _ ->
         {:error, :unknown_message_type}
     end

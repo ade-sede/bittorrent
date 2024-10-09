@@ -5,6 +5,7 @@ defmodule Bittorrent.PeerConnection do
   alias Bittorrent.PeerState
 
   @max_concurrent_requests 10
+  @metadata_piece_size 16384
 
   defstruct [
     :socket,
@@ -41,7 +42,7 @@ defmodule Bittorrent.PeerConnection do
           color: color
         }
 
-        send(state.parent, {:peer_id, peer_id})
+        send(state.parent, {self(), :peer_id, peer_id})
 
         case GenServer.call(state.queue, :available_to_download?) do
           true ->
@@ -51,6 +52,21 @@ defmodule Bittorrent.PeerConnection do
             {:ok, state}
         end
     end
+  end
+
+  @impl true
+  def handle_call(:request_metadata, _from, state) do
+    piece_count = ceil(state.peer_state.metadata_length / @metadata_piece_size)
+
+    Enum.each(0..piece_count, fn piece_index ->
+      send_message(state, {
+        :request_metadata,
+        piece_index,
+        state.peer_state.metadata_extension_id
+      })
+    end)
+
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -125,7 +141,7 @@ defmodule Bittorrent.PeerConnection do
             }
           })
 
-          send(new_state.parent, :extension_handshake_sent)
+          send(new_state.parent, {self(), :extension_handshake_sent})
         end
 
         request_pieces(new_state)
@@ -174,7 +190,7 @@ defmodule Bittorrent.PeerConnection do
             peer_state = PeerState.set_metadata_length(state.peer_state, length)
             peer_state = PeerState.set_metadata_extension_id(peer_state, metadata_extension_id)
 
-            send(state.parent, {:peer_ut_metadata, metadata_extension_id})
+            send(state.parent, {self(), :peer_ut_metadata, {length, metadata_extension_id}})
             %{state | peer_state: peer_state}
 
           {:unknown, _payload} ->

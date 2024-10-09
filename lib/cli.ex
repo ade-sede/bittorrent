@@ -6,6 +6,8 @@ defmodule Bittorrent.CLI do
   alias Bittorrent.PeerConnection
   alias Bittorrent.DownloadQueue
 
+  # TODO refactor dispatch of commands
+
   @client_id :crypto.strong_rand_bytes(20)
   @colors [
     :green,
@@ -122,12 +124,61 @@ defmodule Bittorrent.CLI do
       {:ok, supervisor_pid} = Supervisor.start_link([peer_spec], strategy: :one_for_one)
 
       receive do
-        {:peer_id, peer_id} ->
+        {_, :peer_id, peer_id} ->
           IO.puts("Peer ID: #{peer_id}")
 
           receive do
-            {:peer_ut_metadata, extension_id} ->
+            {_, :peer_ut_metadata, {_, extension_id}} ->
               IO.puts("Peer Metadata Extension ID: #{extension_id}")
+              Supervisor.stop(supervisor_pid)
+          end
+      after
+        10_000 ->
+          IO.puts("Timeout")
+          Supervisor.stop(supervisor_pid)
+      end
+    end
+  end
+
+  defp parse_args(["magnet_info", magnet_link]) do
+    with {:ok, file} <- TorrentInfo.from_magnet_link(magnet_link),
+         {:ok, peers} <- Protocol.discover_peers(file, @client_id),
+         {:ok, queue} <-
+           DownloadQueue.start_link({file.info_hash, nil, nil, [], self(), :all}) do
+      peer_specs =
+        Enum.reduce(peers, {@colors, []}, fn peer, {colors, specs} ->
+          {color, remaining_colors} = assign_color(colors)
+
+          new_peer_spec = %{
+            id: peer,
+            start:
+              {PeerConnection, :start_link,
+               [{peer, file.info_hash, @client_id, self(), queue, @magnet_extensions, color}]}
+          }
+
+          {remaining_colors, specs ++ [new_peer_spec]}
+        end)
+        |> elem(1)
+
+      {:ok, supervisor_pid} = Supervisor.start_link(peer_specs, strategy: :one_for_one)
+
+      IO.puts("Info Hash: #{Base.encode16(file.info_hash, case: :lower)}")
+      IO.puts("Tracker URL: #{file.tracker_url}")
+
+      receive do
+        {_, :peer_id, peer_id} ->
+          IO.puts("Peer ID: #{peer_id}")
+
+          receive do
+            {pid, :peer_ut_metadata, {length, extension_id}} ->
+              IO.puts("Peer Metadata Extension ID: #{extension_id}")
+              IO.puts("Length: #{length}")
+
+              # Use whichever peer sent us the metadata info first to get the
+              # rest of the metadata
+              # is expected to be very small so no need to // IMO
+              GenServer.call(pid, :request_metadata)
+
               Supervisor.stop(supervisor_pid)
           end
       after
