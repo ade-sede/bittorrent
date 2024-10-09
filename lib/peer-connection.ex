@@ -167,7 +167,15 @@ defmodule Bittorrent.PeerConnection do
         case extension do
           {:handshake, dict} ->
             {dict, _} = Bencode.decode(dict)
-            send(state.parent, {:peer_ut_metadata, dict["m"]["ut_metadata"]})
+
+            length = dict["metadata_size"]
+            metadata_extension_id = dict["m"]["ut_metadata"]
+
+            peer_state = PeerState.set_metadata_length(state.peer_state, length)
+            peer_state = PeerState.set_metadata_extension_id(peer_state, metadata_extension_id)
+
+            send(state.parent, {:peer_ut_metadata, metadata_extension_id})
+            %{state | peer_state: peer_state}
 
           {:unknown, _payload} ->
             log(:red, "Unknown extension messages")

@@ -9,7 +9,9 @@ defmodule Bittorrent.PeerState do
     :peer_choking,
     :am_interested,
     :extensions,
-    :active_requests
+    :active_requests,
+    :metadata_extension_id,
+    :metadata_length
   ]
 
   def new(peer_id, extensions) do
@@ -19,7 +21,9 @@ defmodule Bittorrent.PeerState do
       peer_choking: true,
       am_interested: false,
       extensions: extensions,
-      active_requests: %{}
+      active_requests: %{},
+      metadata_extension_id: nil,
+      metadata_length: 0
     }
   end
 
@@ -39,6 +43,14 @@ defmodule Bittorrent.PeerState do
       end)
 
     %{state | available_pieces: MapSet.new(available)}
+  end
+
+  def set_metadata_extension_id(state, id) do
+    %{state | metadata_extension_id: id}
+  end
+
+  def set_metadata_length(state, length) do
+    %{state | metadata_length: length}
   end
 
   def peer_choke(state), do: %{state | peer_choking: true}
