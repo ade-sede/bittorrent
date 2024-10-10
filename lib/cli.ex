@@ -114,11 +114,13 @@ defmodule Bittorrent.CLI do
          [peer | _] <- peers,
          {:ok, queue} <-
            DownloadQueue.start_link({file.info_hash, nil, nil, [], self(), :all}) do
+      logger = create_logger(:blue)
+
       peer_spec = %{
         id: peer,
         start:
           {PeerConnection, :start_link,
-           [{peer, file.info_hash, @client_id, self(), queue, @magnet_extensions, :blue}]}
+           [{peer, file.info_hash, @client_id, self(), queue, @magnet_extensions, logger}]}
       }
 
       {:ok, supervisor_pid} = Supervisor.start_link([peer_spec], strategy: :one_for_one)
@@ -148,12 +150,13 @@ defmodule Bittorrent.CLI do
       peer_specs =
         Enum.reduce(peers, {@colors, []}, fn peer, {colors, specs} ->
           {color, remaining_colors} = assign_color(colors)
+          logger = create_logger(color)
 
           new_peer_spec = %{
             id: peer,
             start:
               {PeerConnection, :start_link,
-               [{peer, file.info_hash, @client_id, self(), queue, @magnet_extensions, color}]}
+               [{peer, file.info_hash, @client_id, self(), queue, @magnet_extensions, logger}]}
           }
 
           {remaining_colors, specs ++ [new_peer_spec]}
@@ -170,14 +173,24 @@ defmodule Bittorrent.CLI do
           IO.puts("Peer ID: #{peer_id}")
 
           receive do
-            {pid, :peer_ut_metadata, {length, extension_id}} ->
+            {pid, :peer_ut_metadata, {_, extension_id}} ->
               IO.puts("Peer Metadata Extension ID: #{extension_id}")
-              IO.puts("Length: #{length}")
 
               # Use whichever peer sent us the metadata info first to get the
               # rest of the metadata
               # is expected to be very small so no need to // IMO
               GenServer.call(pid, :request_metadata)
+
+              receive do
+                {_, :received_all_metadata, meta} ->
+                  {meta, _} = Bencode.decode(meta)
+                  file = TorrentInfo.merge_metadata(file, meta)
+
+                  IO.puts("Length: #{file.length}")
+                  IO.puts("Piece Length: #{file.piece_length}")
+                  IO.puts("Piece Hashes:")
+                  Enum.each(file.piece_hashes, &IO.puts(Base.encode16(&1, case: :lower)))
+              end
 
               Supervisor.stop(supervisor_pid)
           end
@@ -204,12 +217,13 @@ defmodule Bittorrent.CLI do
       peer_specs =
         Enum.reduce(peers, {@colors, []}, fn peer, {colors, specs} ->
           {color, remaining_colors} = assign_color(colors)
+          logger = create_logger(color)
 
           new_peer_spec = %{
             id: peer,
             start:
               {PeerConnection, :start_link,
-               [{peer, file.info_hash, @client_id, self(), queue, [], color}]}
+               [{peer, file.info_hash, @client_id, self(), queue, [], logger}]}
           }
 
           {remaining_colors, specs ++ [new_peer_spec]}
@@ -243,12 +257,13 @@ defmodule Bittorrent.CLI do
       peer_specs =
         Enum.reduce(peers, {@colors, []}, fn peer, {colors, specs} ->
           {color, remaining_colors} = assign_color(colors)
+          logger = create_logger(color)
 
           new_peer_spec = %{
             id: peer,
             start:
               {PeerConnection, :start_link,
-               [{peer, file.info_hash, @client_id, self(), queue, [], color}]}
+               [{peer, file.info_hash, @client_id, self(), queue, [], logger}]}
           }
 
           {remaining_colors, specs ++ [new_peer_spec]}
@@ -294,4 +309,16 @@ defmodule Bittorrent.CLI do
 
   defp assign_color([]), do: {:black, []}
   defp assign_color([color | rest]), do: {color, rest}
+
+  defp create_logger(color) do
+    info_logger = fn message ->
+      IO.puts(:stderr, IO.ANSI.format([color, "#{inspect(self())} - #{message}", :reset]))
+    end
+
+    error_logger = fn message ->
+      IO.puts(:stderr, IO.ANSI.format([:red, "#{inspect(self())} - #{message}", :reset]))
+    end
+
+    {info_logger, error_logger}
+  end
 end

@@ -108,10 +108,10 @@ defmodule Bittorrent.Protocol do
   defp decode_message_id(7), do: :piece
   defp decode_message_id(8), do: :cancel
   defp decode_message_id(20), do: :extension
-  defp decode_message_id(_), do: :unknown
+  defp decode_message_id(id), do: {:unknown, id}
 
   defp decode_extension_message_id(0), do: :handshake
-  defp decode_extension_message_id(_), do: :unknown
+  defp decode_extension_message_id(id), do: {:unknown, id}
 
   def encode_message(message) do
     case message do

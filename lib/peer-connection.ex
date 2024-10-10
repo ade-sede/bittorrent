@@ -6,6 +6,7 @@ defmodule Bittorrent.PeerConnection do
 
   @max_concurrent_requests 10
   @metadata_piece_size 16384
+  @self_metadata_extension_id 100
 
   defstruct [
     :socket,
@@ -14,7 +15,8 @@ defmodule Bittorrent.PeerConnection do
     :client_id,
     :queue,
     :parent,
-    :color
+    :info_logger,
+    :error_logger
   ]
 
   def start_link(args) do
@@ -22,15 +24,17 @@ defmodule Bittorrent.PeerConnection do
   end
 
   @impl true
-  def init({peer_address, info_hash, client_id, parent, queue, extensions, color}) do
+  def init({peer_address, info_hash, client_id, parent, queue, extensions, logger}) do
+    {info_logger, error_logger} = logger
+
     case Protocol.handshake(peer_address, info_hash, client_id, extensions) do
       {:error, reason} ->
-        log(color, "Failed handshake with peer #{peer_address}: #{reason}")
+        error_logger.("Failed handshake with peer #{peer_address}: #{reason}")
         :ignore
 
       {socket, peer_id, extensions} ->
         :inet.setopts(socket, active: :once)
-        log(color, "Connected to peer: #{peer_address}")
+        info_logger.("Connected to peer: #{peer_address}")
 
         state = %__MODULE__{
           socket: socket,
@@ -39,7 +43,8 @@ defmodule Bittorrent.PeerConnection do
           client_id: client_id,
           queue: queue,
           parent: parent,
-          color: color
+          info_logger: info_logger,
+          error_logger: error_logger
         }
 
         send(state.parent, {self(), :peer_id, peer_id})
@@ -56,9 +61,7 @@ defmodule Bittorrent.PeerConnection do
 
   @impl true
   def handle_call(:request_metadata, _from, state) do
-    piece_count = ceil(state.peer_state.metadata_length / @metadata_piece_size)
-
-    Enum.each(0..piece_count, fn piece_index ->
+    Enum.each(0..(state.peer_state.number_expected_metadata_pieces - 1), fn piece_index ->
       send_message(state, {
         :request_metadata,
         piece_index,
@@ -71,11 +74,11 @@ defmodule Bittorrent.PeerConnection do
 
   @impl true
   def handle_continue(:request_bitfield, state) do
-    log(state.color, "Sending interested message")
+    state.info_logger.("Sending interested message")
 
     case send_message(state, :interested) do
       {:error, reason} ->
-        log(state.color, "Error when sending interested flag: #{reason}")
+        state.info_logger.("Error when sending interested flag: #{reason}")
         {:stop, reason}
 
       _ ->
@@ -86,7 +89,7 @@ defmodule Bittorrent.PeerConnection do
 
   @impl true
   def handle_info({:tcp, socket, data}, state) do
-    log(state.color, "Received TCP data: #{inspect(data, limit: 50)}")
+    state.info_logger.("Received TCP data: #{inspect(data, limit: 50)}")
     new_state = handle_message(data, state)
     :inet.setopts(socket, active: :once)
     {:noreply, new_state}
@@ -94,7 +97,7 @@ defmodule Bittorrent.PeerConnection do
 
   @impl true
   def handle_info({:tcp_closed, _socket}, state) do
-    log(state.color, "Connection closed")
+    state.info_logger.("Connection closed")
     {:stop, :normal, state}
   end
 
@@ -103,7 +106,7 @@ defmodule Bittorrent.PeerConnection do
 
     case msg do
       :keep_alive ->
-        log(state.color, "Received keep-alive")
+        state.info_logger.("Received keep-alive")
         state
 
       {:overflow, msg, rest} ->
@@ -113,8 +116,8 @@ defmodule Bittorrent.PeerConnection do
       {:reject_request, _, _, _} ->
         _apply(msg, data, state)
 
-      {:unknown, _} ->
-        log(state.color, "Received unknown message: #{inspect(msg)}")
+      {{:unknown, _id}, _} ->
+        state.info_logger.("Received unknown message: #{inspect(msg)}")
         state
 
       {_, _} ->
@@ -125,18 +128,18 @@ defmodule Bittorrent.PeerConnection do
   defp _apply(msg, data, state) do
     case msg do
       {:bitfield, payload} ->
-        log(state.color, "Received bitfield: #{inspect(payload, limit: 50)}")
+        state.info_logger.("Received bitfield: #{inspect(payload, limit: 50)}")
         new_peer_state = PeerState.set_piece_availability(state.peer_state, payload)
         new_state = %{state | peer_state: new_peer_state}
 
         if PeerState.extension_protocol_enabled?(new_state.peer_state) do
-          log(new_state.color, "Peer supports extension protocol !")
+          state.info_logger.("Peer supports extension protocol !")
 
           send_message(new_state, {
             :extension,
             %{
               "m" => %{
-                "ut_metadata" => 100
+                "ut_metadata" => @self_metadata_extension_id
               }
             }
           })
@@ -147,30 +150,29 @@ defmodule Bittorrent.PeerConnection do
         request_pieces(new_state)
 
       {:unchoke, _} ->
-        log(state.color, "Peer unchoked us")
+        state.info_logger.("Peer unchoked us")
         new_peer_state = PeerState.peer_unchoke(state.peer_state)
         new_state = %{state | peer_state: new_peer_state}
         request_pieces(new_state)
 
       {:choke, _} ->
-        log(state.color, "Peer choked us")
+        state.info_logger.("Peer choked us")
         new_peer_state = PeerState.peer_choke(state.peer_state)
         %{state | peer_state: new_peer_state}
 
       {:have, <<piece::32>>} ->
-        log(state.color, "Peer has piece #{piece}")
+        state.info_logger.("Peer has piece #{piece}")
         new_peer_state = PeerState.update_available_piece(state.peer_state, piece)
         new_state = %{state | peer_state: new_peer_state}
         maybe_request_piece(new_state, piece)
 
       {:piece, <<index::32, begin::32, block::binary>>} ->
-        log(state.color, "Received piece #{index}, offset #{begin}, length #{byte_size(block)}")
+        state.info_logger.("Received piece #{index}, offset #{begin}, length #{byte_size(block)}")
         new_state = handle_received_piece(state, index, begin, block)
         request_pieces(new_state)
 
       {:reject_request, index, begin, length} ->
-        log(
-          state.color,
+        state.info_logger.(
           "Peer rejected request for piece #{index}, offset #{begin}, length #{length}"
         )
 
@@ -187,25 +189,51 @@ defmodule Bittorrent.PeerConnection do
             length = dict["metadata_size"]
             metadata_extension_id = dict["m"]["ut_metadata"]
 
-            peer_state = PeerState.set_metadata_length(state.peer_state, length)
+            piece_count = ceil(length / @metadata_piece_size)
+
+            peer_state =
+              PeerState.set_number_expected_metadata_pieces(state.peer_state, piece_count)
+
+            peer_state = PeerState.set_metadata_length(peer_state, length)
             peer_state = PeerState.set_metadata_extension_id(peer_state, metadata_extension_id)
 
             send(state.parent, {self(), :peer_ut_metadata, {length, metadata_extension_id}})
             %{state | peer_state: peer_state}
 
-          {:unknown, _payload} ->
-            log(:red, "Unknown extension messages")
+          {{:unknown, id}, payload} ->
+            if id == @self_metadata_extension_id do
+              {dict, metadata} = Bencode.decode(payload)
+
+              if dict["total_size"] != byte_size(metadata) do
+                state.error_logger.("Incomplete metadata")
+              end
+
+              peer_state =
+                PeerState.append_metadata_piece(state.peer_state, metadata)
+
+              if peer_state.number_received_metadata_pieces ==
+                   peer_state.number_expected_metadata_pieces do
+                send(
+                  state.parent,
+                  {self(), :received_all_metadata, peer_state.metadata_pieces}
+                )
+              end
+
+              %{state | peer_state: peer_state}
+            else
+              state.error_logger.("Unknown extension messages")
+            end
         end
 
       {:incomplete, missing} ->
-        log(state.color, "Missing bytes count: #{missing}")
+        state.info_logger.("Missing bytes count: #{missing}")
 
         case :gen_tcp.recv(state.socket, missing) do
           {:error, reason} ->
-            log(:red, "Error while receiving remainder of message: #{reason}")
+            state.error_logger.("Error while receiving remainder of message: #{reason}")
 
           {:ok, remaining_data} ->
-            log(state.color, "Collected missing data: #{byte_size(remaining_data)}")
+            state.info_logger.("Collected missing data: #{byte_size(remaining_data)}")
             handle_message(data <> remaining_data, state)
         end
     end
@@ -215,34 +243,33 @@ defmodule Bittorrent.PeerConnection do
     if PeerState.can_request?(state.peer_state, @max_concurrent_requests) do
       case GenServer.call(state.queue, {:need_piece?, piece}) do
         true ->
-          log(state.color, "Requesting specific piece #{piece}")
+          state.info_logger.("Requesting specific piece #{piece}")
           request_specific_piece(state, piece)
 
         false ->
-          log(state.color, "Piece #{piece} not needed")
+          state.info_logger.("Piece #{piece} not needed")
           state
       end
     else
-      log(state.color, "Cannot request more pieces at the moment")
+      state.info_logger.("Cannot request more pieces at the moment")
       state
     end
   end
 
   defp request_pieces(state) do
     available_slots = @max_concurrent_requests - PeerState.request_count(state.peer_state)
-    log(state.color, "Requesting pieces, available slots: #{available_slots}")
+    state.info_logger.("Requesting pieces, available slots: #{available_slots}")
 
     Enum.reduce_while(1..available_slots, state, fn _, acc ->
       if PeerState.can_request?(acc.peer_state, @max_concurrent_requests) do
         case GenServer.call(acc.queue, :get_block_to_download) do
           nil ->
-            log(acc.color, "No more blocks to download")
+            state.info_logger.("No more blocks to download")
             new_peer_state = PeerState.am_not_interested(state.peer_state)
             {:halt, %{acc | peer_state: new_peer_state}}
 
           {piece_index, block_offset, block_length} ->
-            log(
-              acc.color,
+            state.info_logger.(
               "Requesting piece #{piece_index}, offset #{block_offset}, length #{block_length}"
             )
 
@@ -256,7 +283,7 @@ defmodule Bittorrent.PeerConnection do
             {:cont, new_state}
         end
       else
-        log(acc.color, "Cannot request more pieces")
+        state.info_logger.("Cannot request more pieces")
         {:halt, acc}
       end
     end)
@@ -265,12 +292,11 @@ defmodule Bittorrent.PeerConnection do
   defp request_specific_piece(state, piece_index) do
     case GenServer.call(state.queue, {:get_block, piece_index}) do
       nil ->
-        log(state.color, "No blocks available for piece #{piece_index}")
+        state.info_logger.("No blocks available for piece #{piece_index}")
         state
 
       {block_offset, block_length} ->
-        log(
-          state.color,
+        state.info_logger.(
           "Requesting specific piece #{piece_index}, offset #{block_offset}, length #{block_length}"
         )
 
@@ -298,16 +324,12 @@ defmodule Bittorrent.PeerConnection do
     case Protocol.encode_message(message) do
       {:ok, encoded} ->
         result = :gen_tcp.send(state.socket, encoded)
-        log(state.color, "Sent message: #{inspect(message)}, result: #{inspect(result)}")
+        state.info_logger.("Sent message: #{inspect(message)}, result: #{inspect(result)}")
         result
 
       {:error, reason} ->
-        log(state.color, "Failed to encode message: #{inspect(reason)}")
+        state.info_logger.("Failed to encode message: #{inspect(reason)}")
         {:error, reason}
     end
-  end
-
-  defp log(color, message) do
-    IO.puts(IO.ANSI.format([color, "#{inspect(self())} - #{message}", :reset]))
   end
 end

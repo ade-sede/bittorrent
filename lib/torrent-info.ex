@@ -48,4 +48,18 @@ defmodule Bittorrent.TorrentInfo do
       _ -> {:error, "Malformed magnet URI"}
     end
   end
+
+  def merge_metadata(file, metadata_dict) do
+    piece_hashes =
+      for <<piece_hash::binary-size(20) <- metadata_dict["pieces"]>> do
+        piece_hash
+      end
+
+    %{
+      file
+      | length: metadata_dict["length"],
+        piece_length: metadata_dict["piece length"],
+        piece_hashes: piece_hashes
+    }
+  end
 end

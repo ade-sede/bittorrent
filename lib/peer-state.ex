@@ -11,7 +11,10 @@ defmodule Bittorrent.PeerState do
     :extensions,
     :active_requests,
     :metadata_extension_id,
-    :metadata_length
+    :metadata_length,
+    :number_expected_metadata_pieces,
+    :number_received_metadata_pieces,
+    :metadata_pieces
   ]
 
   def new(peer_id, extensions) do
@@ -23,7 +26,10 @@ defmodule Bittorrent.PeerState do
       extensions: extensions,
       active_requests: %{},
       metadata_extension_id: nil,
-      metadata_length: 0
+      metadata_length: 0,
+      number_expected_metadata_pieces: 0,
+      number_received_metadata_pieces: 0,
+      metadata_pieces: <<>>
     }
   end
 
@@ -84,5 +90,22 @@ defmodule Bittorrent.PeerState do
 
   def extension_protocol_enabled?(state) do
     MapSet.member?(state.extensions, Protocol.extension_protocol())
+  end
+
+  def set_number_expected_metadata_pieces(state, n) do
+    %{state | number_expected_metadata_pieces: n}
+  end
+
+  def append_metadata_piece(state, meta) do
+    if state.number_received_metadata_pieces >= state.number_expected_metadata_pieces do
+      IO.puts("Received too  many meta pieces")
+      state
+    else
+      %{
+        state
+        | metadata_pieces: state.metadata_pieces <> meta,
+          number_received_metadata_pieces: state.number_received_metadata_pieces + 1
+      }
+    end
   end
 end
