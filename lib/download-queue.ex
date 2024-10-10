@@ -287,19 +287,42 @@ defmodule Bittorrent.DownloadQueue do
 
       piece_data = binary_part(sorted_data, 0, piece.size)
 
-      new_state =
-        state
-        |> put_in([Access.key(:blocks), Access.key(piece_index), Access.key(:completed)], true)
-        |> put_in([Access.key(:blocks), Access.key(piece_index), Access.key(:data)], piece_data)
-        |> update_in([Access.key(:completed_pieces)], &[piece_index | &1])
+      calculated_hash = :crypto.hash(:sha, piece_data)
+      expected_hash = piece.hash
 
-      send(state.parent, {:done, piece_index, piece_data})
+      if calculated_hash == expected_hash do
+        new_state =
+          state
+          |> put_in([Access.key(:blocks), Access.key(piece_index), Access.key(:completed)], true)
+          |> put_in([Access.key(:blocks), Access.key(piece_index), Access.key(:data)], piece_data)
+          |> update_in([Access.key(:completed_pieces)], &[piece_index | &1])
 
-      if length(new_state.completed_pieces) == map_size(new_state.blocks) do
-        send(state.parent, :all_pieces_completed)
+        send(state.parent, {:done, piece_index, piece_data})
+
+        if length(new_state.completed_pieces) == map_size(new_state.blocks) do
+          send(state.parent, :all_pieces_completed)
+        end
+
+        new_state
+      else
+        IO.puts("Hash verification failed for piece #{piece_index}. Resetting all blocks.")
+
+        new_state =
+          state
+          |> put_in([Access.key(:blocks), Access.key(piece_index), Access.key(:completed)], false)
+          |> put_in([Access.key(:blocks), Access.key(piece_index), Access.key(:data)], <<>>)
+          |> update_in(
+            [Access.key(:blocks), Access.key(piece_index), Access.key(:blocks)],
+            fn blocks ->
+              Enum.map(blocks, fn {offset, block} ->
+                {offset, %{block | state: :not_started, data: nil}}
+              end)
+              |> Map.new()
+            end
+          )
+
+        new_state
       end
-
-      new_state
     else
       state
     end
