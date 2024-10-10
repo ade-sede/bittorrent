@@ -4,7 +4,7 @@ defmodule Bittorrent.DownloadQueue do
   defstruct [
     :info_hash,
     :piece_length,
-    :total_length,
+    :file_length,
     :target_block,
     :blocks,
     :completed_pieces,
@@ -43,10 +43,10 @@ defmodule Bittorrent.DownloadQueue do
   end
 
   @impl true
-  def init({info_hash, piece_length, total_length, piece_hashes, parent, piece_to_download}) do
+  def init({info_hash, piece_length, file_length, piece_hashes, parent, piece_to_download}) do
     blocks =
       if Enum.count(piece_hashes) > 0,
-        do: initialize_blocks(piece_hashes, piece_length, total_length),
+        do: initialize_blocks(piece_hashes, piece_length, file_length),
         else: %{}
 
     blocks = filter_blocks(blocks, piece_to_download)
@@ -54,7 +54,7 @@ defmodule Bittorrent.DownloadQueue do
     state = %__MODULE__{
       info_hash: info_hash,
       piece_length: piece_length,
-      total_length: total_length,
+      file_length: file_length,
       blocks: blocks,
       completed_pieces: [],
       target_block: piece_to_download,
@@ -65,8 +65,8 @@ defmodule Bittorrent.DownloadQueue do
   end
 
   @impl true
-  def handle_call({:initialize_blocks, piece_hashes, piece_length, total_length}, _from, state) do
-    blocks = initialize_blocks(piece_hashes, piece_length, total_length)
+  def handle_call({:initialize_blocks, piece_hashes, piece_length, file_length}, _from, state) do
+    blocks = initialize_blocks(piece_hashes, piece_length, file_length)
     blocks = filter_blocks(blocks, state.target_block)
 
     {:reply, {:ok, blocks}, %{state | blocks: blocks}}
@@ -158,13 +158,13 @@ defmodule Bittorrent.DownloadQueue do
     end)
   end
 
-  defp initialize_blocks(pieces, piece_length, total_length) do
+  defp initialize_blocks(pieces, piece_length, file_length) do
     piece_count = length(pieces)
 
     0..(piece_count - 1)
     |> Enum.map(fn piece_index ->
       last_piece = piece_index == piece_count - 1
-      piece_size = if last_piece, do: rem(total_length, piece_length), else: piece_length
+      piece_size = if last_piece, do: rem(file_length, piece_length), else: piece_length
       piece_size = if piece_size == 0, do: piece_length, else: piece_size
 
       blocks = divide_piece_into_blocks(piece_size)
