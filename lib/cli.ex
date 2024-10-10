@@ -202,6 +202,14 @@ defmodule Bittorrent.CLI do
     end
   end
 
+  defp parse_args(["magnet_download_piece", "-o", output_file, magnet_link, piece_index]) do
+    magnet_download_piece(magnet_link, String.to_integer(piece_index), output_file)
+  end
+
+  defp parse_args(["magnet_download", "-o", output_file, magnet_link]) do
+    magnet_download(magnet_link, output_file)
+  end
+
   defp parse_args(_) do
     IO.puts("Invalid command. Usage: your_bittorrent.sh <command> <args>")
   end
@@ -247,6 +255,68 @@ defmodule Bittorrent.CLI do
     end
   end
 
+  defp magnet_download_piece(magnet_link, piece_index, output_file) do
+    with {:ok, file} <- TorrentInfo.from_magnet_link(magnet_link),
+         {:ok, peers} <- Protocol.discover_peers(file, @client_id),
+         {:ok, queue} <-
+           DownloadQueue.start_link(
+             {file.info_hash, file.piece_length, file.length, [], self(), piece_index}
+           ) do
+      peer_specs =
+        Enum.reduce(peers, {@colors, []}, fn peer, {colors, specs} ->
+          {color, remaining_colors} = assign_color(colors)
+          logger = create_logger(color)
+
+          new_peer_spec = %{
+            id: peer,
+            start:
+              {PeerConnection, :start_link,
+               [{peer, file.info_hash, @client_id, self(), queue, @magnet_extensions, logger}]}
+          }
+
+          {remaining_colors, specs ++ [new_peer_spec]}
+        end)
+        |> elem(1)
+
+      {:ok, supervisor_pid} = Supervisor.start_link(peer_specs, strategy: :one_for_one)
+
+      receive do
+        {pid, :peer_ut_metadata, _} ->
+          GenServer.call(pid, :request_metadata)
+
+          receive do
+            {_, :received_all_metadata, meta} ->
+              {meta, _} = Bencode.decode(meta)
+              file = TorrentInfo.merge_metadata(file, meta)
+
+              GenServer.call(
+                queue,
+                {:initialize_blocks, file.piece_hashes, file.piece_length, file.length}
+              )
+
+              supervisor_pid
+              |> Supervisor.which_children()
+              |> Enum.each(fn {_, peer, _, _} ->
+                GenServer.cast(peer, :new_downloads_available)
+              end)
+          end
+
+          receive do
+            {:done, ^piece_index, piece_data} ->
+              File.write!(output_file, piece_data)
+              Supervisor.stop(supervisor_pid)
+              IO.puts("Piece #{piece_index} downloaded to #{output_file}")
+          end
+      after
+        300_000 ->
+          IO.puts("Timeout")
+          Supervisor.stop(supervisor_pid)
+      end
+    else
+      {:error, reason} -> IO.puts("Error: #{reason}")
+    end
+  end
+
   defp download_file(torrent_file, output_file) do
     with {:ok, file} <- TorrentInfo.parse_file(torrent_file),
          {:ok, peers} <- Protocol.discover_peers(file, @client_id),
@@ -284,6 +354,74 @@ defmodule Bittorrent.CLI do
       File.write!(output_file, ordered_data)
       Supervisor.stop(supervisor_pid)
       IO.puts("Downloaded #{torrent_file} to #{output_file}")
+    else
+      {:error, reason} -> IO.puts("Error: #{reason}")
+    end
+  end
+
+  defp magnet_download(magnet_link, output_file) do
+    with {:ok, file} <- TorrentInfo.from_magnet_link(magnet_link),
+         {:ok, peers} <- Protocol.discover_peers(file, @client_id),
+         {:ok, queue} <-
+           DownloadQueue.start_link(
+             {file.info_hash, file.piece_length, file.length, [], self(), :all}
+           ) do
+      peer_specs =
+        Enum.reduce(peers, {@colors, []}, fn peer, {colors, specs} ->
+          {color, remaining_colors} = assign_color(colors)
+          logger = create_logger(color)
+
+          new_peer_spec = %{
+            id: peer,
+            start:
+              {PeerConnection, :start_link,
+               [{peer, file.info_hash, @client_id, self(), queue, @magnet_extensions, logger}]}
+          }
+
+          {remaining_colors, specs ++ [new_peer_spec]}
+        end)
+        |> elem(1)
+
+      {:ok, supervisor_pid} = Supervisor.start_link(peer_specs, strategy: :one_for_one)
+
+      receive do
+        {pid, :peer_ut_metadata, _} ->
+          GenServer.call(pid, :request_metadata)
+
+          receive do
+            {_, :received_all_metadata, meta} ->
+              {meta, _} = Bencode.decode(meta)
+              file = TorrentInfo.merge_metadata(file, meta)
+
+              GenServer.call(
+                queue,
+                {:initialize_blocks, file.piece_hashes, file.piece_length, file.length}
+              )
+
+              supervisor_pid
+              |> Supervisor.which_children()
+              |> Enum.each(fn {_, peer, _, _} ->
+                GenServer.cast(peer, :new_downloads_available)
+              end)
+
+              pieces = gather_pieces(%{}, length(file.piece_hashes))
+
+              ordered_data =
+                pieces
+                |> Map.to_list()
+                |> Enum.sort_by(&elem(&1, 0))
+                |> Enum.map(&elem(&1, 1))
+                |> Enum.join()
+
+              File.write!(output_file, ordered_data)
+              Supervisor.stop(supervisor_pid)
+              IO.puts("Downloaded to #{output_file}")
+          end
+      after
+        300_000 ->
+          IO.puts("Timeout")
+          Supervisor.stop(supervisor_pid)
+      end
     else
       {:error, reason} -> IO.puts("Error: #{reason}")
     end

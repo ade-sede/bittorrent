@@ -5,6 +5,7 @@ defmodule Bittorrent.DownloadQueue do
     :info_hash,
     :piece_length,
     :total_length,
+    :target_block,
     :blocks,
     :completed_pieces,
     :parent
@@ -14,32 +15,41 @@ defmodule Bittorrent.DownloadQueue do
     GenServer.start_link(__MODULE__, args)
   end
 
+  defp filter_blocks(blocks, target) do
+    case target do
+      :all ->
+        blocks
+
+      piece_index when is_number(piece_index) ->
+        if Enum.empty?(blocks) do
+          %{}
+        else
+          case Enum.find(blocks, nil, fn {idx, _} -> idx == piece_index end) do
+            {_, piece_data} ->
+              %{piece_index => piece_data}
+
+            nil ->
+              if Enum.empty?(blocks) do
+                raise ArgumentError,
+                      "Piece #{piece_index} does not exist"
+              end
+          end
+        end
+
+      _ ->
+        raise ArgumentError,
+              "Invalid piece_to_download. Expected :all or a number, got: #{inspect(target)}"
+    end
+  end
+
   @impl true
-  def init({info_hash, piece_length, total_length, pieces, parent, piece_to_download}) do
+  def init({info_hash, piece_length, total_length, piece_hashes, parent, piece_to_download}) do
     blocks =
-      if Enum.count(pieces) > 0,
-        do: initialize_blocks(pieces, piece_length, total_length),
+      if Enum.count(piece_hashes) > 0,
+        do: initialize_blocks(piece_hashes, piece_length, total_length),
         else: %{}
 
-    blocks =
-      case piece_to_download do
-        :all ->
-          blocks
-
-        piece_index when is_number(piece_index) ->
-          {_, piece_data} = Enum.find(blocks, fn {idx, _} -> idx == piece_index end)
-
-          if Enum.empty?(blocks) do
-            raise ArgumentError,
-                  "Piece #{piece_index} does not exist"
-          end
-
-          %{piece_index => piece_data}
-
-        _ ->
-          raise ArgumentError,
-                "Invalid piece_to_download. Expected :all or a number, got: #{inspect(piece_to_download)}"
-      end
+    blocks = filter_blocks(blocks, piece_to_download)
 
     state = %__MODULE__{
       info_hash: info_hash,
@@ -47,10 +57,19 @@ defmodule Bittorrent.DownloadQueue do
       total_length: total_length,
       blocks: blocks,
       completed_pieces: [],
+      target_block: piece_to_download,
       parent: parent
     }
 
     {:ok, state}
+  end
+
+  @impl true
+  def handle_call({:initialize_blocks, piece_hashes, piece_length, total_length}, _from, state) do
+    blocks = initialize_blocks(piece_hashes, piece_length, total_length)
+    blocks = filter_blocks(blocks, state.target_block)
+
+    {:reply, {:ok, blocks}, %{state | blocks: blocks}}
   end
 
   @impl true

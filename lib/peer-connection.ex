@@ -49,13 +49,7 @@ defmodule Bittorrent.PeerConnection do
 
         send(state.parent, {self(), :peer_id, peer_id})
 
-        case GenServer.call(state.queue, :available_to_download?) do
-          true ->
-            {:ok, state, {:continue, :request_bitfield}}
-
-          false ->
-            {:ok, state}
-        end
+        {:ok, state, {:continue, :request_bitfield}}
     end
   end
 
@@ -73,18 +67,13 @@ defmodule Bittorrent.PeerConnection do
   end
 
   @impl true
+  def handle_cast(:new_downloads_available, state) do
+    request_bitfield(state)
+  end
+
+  @impl true
   def handle_continue(:request_bitfield, state) do
-    state.info_logger.("Sending interested message")
-
-    case send_message(state, :interested) do
-      {:error, reason} ->
-        state.info_logger.("Error when sending interested flag: #{reason}")
-        {:stop, reason}
-
-      _ ->
-        new_peer_state = PeerState.am_interested(state.peer_state)
-        {:noreply, %{state | peer_state: new_peer_state}}
-    end
+    request_bitfield(state)
   end
 
   @impl true
@@ -99,6 +88,27 @@ defmodule Bittorrent.PeerConnection do
   def handle_info({:tcp_closed, _socket}, state) do
     state.info_logger.("Connection closed")
     {:stop, :normal, state}
+  end
+
+  defp request_bitfield(state) do
+    case GenServer.call(state.queue, :available_to_download?) do
+      true ->
+        {:ok, state, {:continue, :request_bitfield}}
+        state.info_logger.("Sending interested message")
+
+        case send_message(state, :interested) do
+          {:error, reason} ->
+            state.info_logger.("Error when sending interested flag: #{reason}")
+            {:stop, reason}
+
+          _ ->
+            new_peer_state = PeerState.am_interested(state.peer_state)
+            {:noreply, %{state | peer_state: new_peer_state}}
+        end
+
+      false ->
+        {:noreply, state}
+    end
   end
 
   defp handle_message(data, state) do
