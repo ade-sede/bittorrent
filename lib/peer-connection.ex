@@ -4,8 +4,7 @@ defmodule Bittorrent.PeerConnection do
   alias Bittorrent.Bencode
   alias Bittorrent.PeerState
 
-  @max_concurrent_requests 10
-  @metadata_piece_size 16384
+  @max_concurrent_requests 1
   @self_metadata_extension_id 100
 
   defstruct [
@@ -196,18 +195,19 @@ defmodule Bittorrent.PeerConnection do
           {:handshake, dict} ->
             {dict, _} = Bencode.decode(dict)
 
-            length = dict["metadata_size"]
-            metadata_extension_id = dict["m"]["ut_metadata"]
-
-            piece_count = ceil(length / @metadata_piece_size)
-
             peer_state =
-              PeerState.set_number_expected_metadata_pieces(state.peer_state, piece_count)
+              PeerState.set_metadata_info(
+                state.peer_state,
+                dict["m"]["ut_metadata"],
+                dict["metadata_size"]
+              )
 
-            peer_state = PeerState.set_metadata_length(peer_state, length)
-            peer_state = PeerState.set_metadata_extension_id(peer_state, metadata_extension_id)
+            send(
+              state.parent,
+              {self(), :peer_ut_metadata,
+               {peer_state.metadata_length, peer_state.metadata_extension_id}}
+            )
 
-            send(state.parent, {self(), :peer_ut_metadata, {length, metadata_extension_id}})
             %{state | peer_state: peer_state}
 
           {{:unknown, id}, payload} ->

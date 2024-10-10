@@ -3,6 +3,8 @@ defmodule Bittorrent.PeerState do
   alias Bittorrent.Protocol
   require Bittorrent.Protocol
 
+  @metadata_piece_size 16384
+
   defstruct [
     :peer_id,
     :available_pieces,
@@ -51,14 +53,6 @@ defmodule Bittorrent.PeerState do
     %{state | available_pieces: MapSet.new(available)}
   end
 
-  def set_metadata_extension_id(state, id) do
-    %{state | metadata_extension_id: id}
-  end
-
-  def set_metadata_length(state, length) do
-    %{state | metadata_length: length}
-  end
-
   def peer_choke(state), do: %{state | peer_choking: true}
   def peer_unchoke(state), do: %{state | peer_choking: false}
 
@@ -92,13 +86,20 @@ defmodule Bittorrent.PeerState do
     MapSet.member?(state.extensions, Protocol.extension_protocol())
   end
 
-  def set_number_expected_metadata_pieces(state, n) do
-    %{state | number_expected_metadata_pieces: n}
+  def set_metadata_info(state, extension_id, metadata_length) do
+    piece_count = ceil(metadata_length / @metadata_piece_size)
+
+    %{
+      state
+      | metadata_extension_id: extension_id,
+        metadata_length: metadata_length,
+        number_expected_metadata_pieces: piece_count
+    }
   end
 
   def append_metadata_piece(state, meta) do
     if state.number_received_metadata_pieces >= state.number_expected_metadata_pieces do
-      IO.puts("Received too  many meta pieces")
+      IO.puts("Received too many meta pieces")
       state
     else
       %{
