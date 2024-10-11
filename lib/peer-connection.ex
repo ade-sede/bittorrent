@@ -48,7 +48,7 @@ defmodule Bittorrent.PeerConnection do
 
         send(state.parent, {self(), :peer_id, peer_id})
 
-        {:ok, state, {:continue, :request_bitfield}}
+        {:ok, state}
     end
   end
 
@@ -67,12 +67,13 @@ defmodule Bittorrent.PeerConnection do
 
   @impl true
   def handle_cast(:new_downloads_available, state) do
-    request_bitfield(state)
-  end
+    case interested(state) do
+      {:error, reason} ->
+        state.error_logger.(reason)
 
-  @impl true
-  def handle_continue(:request_bitfield, state) do
-    request_bitfield(state)
+      {atom, state} when atom in [:noop, :ok] ->
+        {:noreply, state}
+    end
   end
 
   @impl true
@@ -89,24 +90,22 @@ defmodule Bittorrent.PeerConnection do
     {:stop, :normal, state}
   end
 
-  defp request_bitfield(state) do
+  defp interested(state) do
     case GenServer.call(state.queue, :available_to_download?) do
       true ->
-        {:ok, state, {:continue, :request_bitfield}}
         state.info_logger.("Sending interested message")
 
         case send_message(state, :interested) do
           {:error, reason} ->
-            state.info_logger.("Error when sending interested flag: #{reason}")
-            {:stop, reason}
+            {:error, "Error when sending interested flag: #{reason}"}
 
           _ ->
             new_peer_state = PeerState.am_interested(state.peer_state)
-            {:noreply, %{state | peer_state: new_peer_state}}
+            {:ok, %{state | peer_state: new_peer_state}}
         end
 
       false ->
-        {:noreply, state}
+        {:noop, state}
     end
   end
 
@@ -138,13 +137,13 @@ defmodule Bittorrent.PeerConnection do
     case msg do
       {:bitfield, payload} ->
         state.info_logger.("Received bitfield: #{inspect(payload, limit: 50)}")
-        new_peer_state = PeerState.set_piece_availability(state.peer_state, payload)
-        new_state = %{state | peer_state: new_peer_state}
+        peer_state = PeerState.set_piece_availability(state.peer_state, payload)
+        state = %{state | peer_state: peer_state}
 
-        if PeerState.extension_protocol_enabled?(new_state.peer_state) do
+        if PeerState.extension_protocol_enabled?(state.peer_state) do
           state.info_logger.("Peer supports extension protocol !")
 
-          send_message(new_state, {
+          send_message(state, {
             :extension,
             %{
               "m" => %{
@@ -153,10 +152,16 @@ defmodule Bittorrent.PeerConnection do
             }
           })
 
-          send(new_state.parent, {self(), :extension_handshake_sent})
+          send(state.parent, {self(), :extension_handshake_sent})
         end
 
-        request_pieces(new_state)
+        case interested(state) do
+          {:error, reason} ->
+            state.error_logger.(reason)
+
+          {atom, state} when atom in [:ok, :noop] ->
+            state
+        end
 
       {:unchoke, _} ->
         state.info_logger.("Peer unchoked us")
