@@ -15,10 +15,13 @@ Protocol, pipelining and more.
 ```bash
 $> ./your_bittorrent.sh download -o /tmp/file.txt sample.torrent
 # or using a magnet link
-$> ./your_bittorrent.sh magnet_download -o "/tmp/file.gif" "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
+$> ./your_bittorrent.sh magnet_download -o /tmp/file.gif "magnet:?xt=urn:btih:c5fb9894bdaba464811b088d806bdd611ba490af&dn=magnet3.gif&tr=http%3A%2F%2Fbittorrent-test-tracker.codecrafters.io%2Fannounce"
 ```
 
-# TODO
+You can also test it by downloading unbuntu's iso but its pretty freaking slow because I only get a few peers most of the time !
 
-- Refactor command dispatch
-- Test with real life torrents
+# Weaknesses
+
+- I struggled to understand the protocol and the way I wrote the logic is a maze. Lacks clarity, because it wasn't clear in my head
+- Didn't implement file caches, so if a peer crashes / your computer crashes you have to start the download all over again
+- Because of the absence of cache, if you download a big file it lives in your memory. Big ram usage that could be avoided by using the filesystem more

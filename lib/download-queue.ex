@@ -136,32 +136,54 @@ defmodule Bittorrent.DownloadQueue do
       |> mark_block_complete(piece_index, begin, block_data)
       |> check_piece_completion(piece_index)
 
-    log_download_progress(new_state)
+    log_download_progress_short(new_state)
 
     {:reply, :ok, new_state}
   end
 
-  defp log_download_progress(state) do
-    overall_progress =
-      "#{length(state.completed_pieces)}/#{map_size(state.blocks)} pieces completed"
+  # defp log_download_progress_long(state) do
+  #   overall_progress =
+  #     "#{length(state.completed_pieces)}/#{map_size(state.blocks)} pieces completed"
+  #
+  #   IO.puts("Download Progress - #{overall_progress}")
+  #
+  #   Enum.each(state.blocks, fn {piece_index, piece} ->
+  #     completed_blocks = Enum.count(piece.blocks, fn {_, block} -> block.state == :complete end)
+  #     total_blocks = map_size(piece.blocks)
+  #
+  #     piece_progress = "Piece #{piece_index}: #{completed_blocks}/#{total_blocks} blocks"
+  #
+  #     block_states =
+  #       Enum.map(piece.blocks, fn {offset, block} ->
+  #         "#{offset}:#{block.state}"
+  #       end)
+  #       |> Enum.join(", ")
+  #
+  #     IO.puts("  #{piece_progress}")
+  #     IO.puts("  Block states: #{block_states}")
+  #   end)
+  # end
 
-    IO.puts("Download Progress - #{overall_progress}")
+  defp log_download_progress_short(state) do
+    completed_count = length(state.completed_pieces)
+    total_pieces = map_size(state.blocks)
+    incomplete_count = total_pieces - completed_count
 
-    Enum.each(state.blocks, fn {piece_index, piece} ->
-      completed_blocks = Enum.count(piece.blocks, fn {_, block} -> block.state == :complete end)
-      total_blocks = map_size(piece.blocks)
+    # Main progress counts
+    IO.puts("#{completed_count}/#{total_pieces} pieces completed")
+    IO.puts("#{incomplete_count}/#{total_pieces} pieces incomplete")
 
-      piece_progress = "Piece #{piece_index}: #{completed_blocks}/#{total_blocks} blocks"
+    # Show in-progress pieces
+    in_progress_count =
+      state.blocks
+      |> Enum.count(fn {_, piece} ->
+        not piece.completed and
+          Enum.any?(piece.blocks, fn {_, block} -> block.state == :in_progress end)
+      end)
 
-      block_states =
-        Enum.map(piece.blocks, fn {offset, block} ->
-          "#{offset}:#{block.state}"
-        end)
-        |> Enum.join(", ")
-
-      IO.puts("  #{piece_progress}")
-      IO.puts("  Block states: #{block_states}")
-    end)
+    if in_progress_count > 0 do
+      IO.puts("Currently downloading: #{in_progress_count} pieces")
+    end
   end
 
   defp initialize_blocks(pieces, piece_length, file_length) do
