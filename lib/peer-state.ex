@@ -56,6 +56,7 @@ defmodule Bittorrent.PeerState do
   def peer_choke(state), do: %{state | peer_choking: true}
   def peer_unchoke(state), do: %{state | peer_choking: false}
 
+  def am_interested?(state), do: state.am_interested
   def am_interested(state), do: %{state | am_interested: true}
   def am_not_interested(state), do: %{state | am_interested: false}
 

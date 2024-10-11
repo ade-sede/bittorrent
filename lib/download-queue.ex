@@ -73,8 +73,8 @@ defmodule Bittorrent.DownloadQueue do
   end
 
   @impl true
-  def handle_call(:get_block_to_download, _from, state) do
-    case find_available_block(state) do
+  def handle_call({:get_block_to_download, piece_indexes}, _from, state) do
+    case find_available_block(state, piece_indexes) do
       nil ->
         IO.puts("DownloadQueue: No available blocks to download")
         {:reply, nil, state}
@@ -96,11 +96,13 @@ defmodule Bittorrent.DownloadQueue do
   end
 
   @impl true
-  def handle_call(:available_to_download?, _from, state) do
+  def handle_call({:available_to_download?, piece_indexes}, _from, state) do
     available_to_download =
       state.blocks
       |> Map.to_list()
-      |> Enum.any?(fn {_, piece} -> piece.completed == false end)
+      |> Enum.any?(fn {idx, piece} ->
+        piece.completed == false && Enum.member?(piece_indexes, idx)
+      end)
 
     {:reply, available_to_download, state}
   end
@@ -111,9 +113,13 @@ defmodule Bittorrent.DownloadQueue do
       nil ->
         {:reply, nil, state}
 
-      {block_offset, block_length} = block ->
-        new_state = mark_block_in_progress(state, {piece_index, block_offset, block_length})
-        {:reply, block, new_state}
+      {piece_index, block_offset, block_length} = block ->
+        IO.puts(
+          "DownloadQueue: Returning block to download: piece #{piece_index}, offset #{block_offset}, length #{block_length}"
+        )
+
+        new_state = mark_block_in_progress(state, block)
+        {:reply, {piece_index, block_offset, block_length}, new_state}
     end
   end
 
@@ -191,22 +197,24 @@ defmodule Bittorrent.DownloadQueue do
     |> Map.new()
   end
 
-  defp find_available_block(state) do
-    Enum.find_value(state.blocks, fn {piece_index, piece} ->
-      if not piece.completed do
-        find_available_block_in_piece(state, piece_index)
-      end
+  defp find_available_block(state, piece_indexes) do
+    Enum.find_value(piece_indexes, fn idx ->
+      find_available_block_in_piece(state, idx)
     end)
   end
 
   defp find_available_block_in_piece(state, piece_index) do
     piece = state.blocks[piece_index]
 
-    Enum.find_value(piece.blocks, fn {offset, block} ->
-      if block.state == :not_started do
-        {piece_index, offset, block.length}
-      end
-    end)
+    if piece do
+      Enum.find_value(piece.blocks, fn {offset, block} ->
+        if block.state == :not_started do
+          {piece_index, offset, block.length}
+        end
+      end)
+    else
+      false
+    end
   end
 
   defp mark_block_in_progress(state, {piece_index, offset, _length}) do

@@ -91,8 +91,13 @@ defmodule Bittorrent.PeerConnection do
   end
 
   defp interested(state) do
-    case GenServer.call(state.queue, :available_to_download?) do
-      true ->
+    pieces_available_to_download =
+      GenServer.call(state.queue, {:available_to_download?, state.peer_state.available_pieces})
+
+    am_interested = PeerState.am_interested?(state.peer_state)
+
+    case {pieces_available_to_download, am_interested} do
+      {true, false} ->
         state.info_logger.("Sending interested message")
 
         case send_message(state, :interested) do
@@ -104,7 +109,14 @@ defmodule Bittorrent.PeerConnection do
             {:ok, %{state | peer_state: new_peer_state}}
         end
 
-      false ->
+      {false, true} ->
+        # TODO not_interested
+        state
+
+      {true, true} ->
+        {:noop, state}
+
+      {false, false} ->
         {:noop, state}
     end
   end
@@ -176,9 +188,16 @@ defmodule Bittorrent.PeerConnection do
 
       {:have, <<piece::32>>} ->
         state.info_logger.("Peer has piece #{piece}")
-        new_peer_state = PeerState.update_available_piece(state.peer_state, piece)
-        new_state = %{state | peer_state: new_peer_state}
-        maybe_request_piece(new_state, piece)
+        peer_state = PeerState.update_available_piece(state.peer_state, piece)
+        state = %{state | peer_state: peer_state}
+
+        case interested(state) do
+          {:error, reason} ->
+            state.error_logger.(reason)
+
+          {atom, state} when atom in [:ok, :noop] ->
+            maybe_request_piece(state, piece)
+        end
 
       {:piece, <<index::32, begin::32, block::binary>>} ->
         state.info_logger.("Received piece #{index}, offset #{begin}, length #{byte_size(block)}")
@@ -277,7 +296,10 @@ defmodule Bittorrent.PeerConnection do
 
     Enum.reduce_while(1..available_slots, state, fn _, acc ->
       if PeerState.can_request?(acc.peer_state, @max_concurrent_requests) do
-        case GenServer.call(acc.queue, :get_block_to_download) do
+        case GenServer.call(
+               acc.queue,
+               {:get_block_to_download, state.peer_state.available_pieces}
+             ) do
           nil ->
             state.info_logger.("No more blocks to download")
             new_peer_state = PeerState.am_not_interested(state.peer_state)
@@ -310,7 +332,7 @@ defmodule Bittorrent.PeerConnection do
         state.info_logger.("No blocks available for piece #{piece_index}")
         state
 
-      {block_offset, block_length} ->
+      {^piece_index, block_offset, block_length} ->
         state.info_logger.(
           "Requesting specific piece #{piece_index}, offset #{block_offset}, length #{block_length}"
         )
